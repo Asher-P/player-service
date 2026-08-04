@@ -1,0 +1,17 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+
+    <!--
+      Only the .NET 9/10 runtimes are installed on this machine; the assignment targets net8.0.
+      LatestMajor lets a net8.0 app run on the newest installed runtime without changing the TFM.
+    -->
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+</Project>

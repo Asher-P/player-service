@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Orleans.Sdk" />
+    <!-- ITransactionalState / [TransactionalState] live in the transactions abstractions. -->
+    <PackageReference Include="Microsoft.Orleans.Transactions" />
+    <PackageReference Include="Microsoft.Orleans.Streaming" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PlayerService.Abstractions\PlayerService.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

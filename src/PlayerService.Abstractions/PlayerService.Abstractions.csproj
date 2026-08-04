@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <!-- Sdk = Orleans.Core.Abstractions + the [GenerateSerializer]/[Alias] code generator. -->
+    <PackageReference Include="Microsoft.Orleans.Sdk" />
+    <!-- Orleans 10 ships [Transaction]/TransactionOption in Orleans.Transactions (there is no
+         separate transactions.abstractions package), and StreamId in Orleans.Streaming. -->
+    <PackageReference Include="Microsoft.Orleans.Transactions" />
+    <PackageReference Include="Microsoft.Orleans.Streaming" />
+  </ItemGroup>
+
+</Project>
