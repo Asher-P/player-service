@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Orleans;
+using Orleans.Transactions;
 using PlayerService.Abstractions.Grains;
 using PlayerService.Abstractions.Models;
 using PlayerService.Api.Auth;
@@ -45,18 +46,26 @@ public sealed class PlayersController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    public ActionResult<StatsResponse> AddScore(string playerId, ScoreRequest request)
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<StatsResponse>> AddScoreAsync(string playerId, ScoreRequest request)
     {
         if (OwnershipFailure(playerId) is { } failure)
         {
             return failure;
         }
 
-        // TODO(Phase 3): var outcome = await _grains.GetGrain<IPlayerGrain>(playerId)
-        //     .AddPointsAsync(request.Points, request.RequestId);
-        //   return Ok(ToResponse(outcome.Stats));
-        // A replay returns the stored original outcome, so this endpoint is retry-safe.
-        return NotImplementedYet("Atomic, idempotent score updates land in Phase 3.");
+        try
+        {
+            // A replay returns the stored original outcome byte-for-byte, so this endpoint is
+            // retry-safe: the same requestId always yields the same response.
+            var outcome = await _grains.GetGrain<IPlayerGrain>(playerId)
+                .AddPointsAsync(request.Points, request.RequestId);
+            return Ok(ToResponse(outcome.Stats));
+        }
+        catch (OrleansTransactionAbortedException)
+        {
+            return TransactionAborted();
+        }
     }
 
     [HttpPost("gifts")]
@@ -120,5 +129,18 @@ public sealed class PlayersController : ControllerBase
         })
         {
             StatusCode = StatusCodes.Status501NotImplemented,
+        };
+
+    /// <summary>Transient cluster contention, not a client bug - safe to retry with backoff because
+    /// the operation is idempotent (plan §5.7).</summary>
+    private ObjectResult TransactionAborted() =>
+        new(new ProblemDetails
+        {
+            Status = StatusCodes.Status503ServiceUnavailable,
+            Title = "Transaction aborted",
+            Detail = "The update conflicted with concurrent activity on this player. Retry with the same requestId.",
+        })
+        {
+            StatusCode = StatusCodes.Status503ServiceUnavailable,
         };
 }

@@ -1,11 +1,15 @@
+using System.Collections.Immutable;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Orleans;
 using Orleans.Concurrency;
 using Orleans.Runtime;
+using Orleans.Streams;
 using Orleans.Transactions.Abstractions;
+using PlayerService.Abstractions.Events;
 using PlayerService.Abstractions.Grains;
 using PlayerService.Abstractions.Models;
+using PlayerService.Abstractions.Streaming;
 using PlayerService.Grains.Configuration;
 using PlayerService.Grains.Internal;
 
@@ -30,6 +34,7 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
 {
     private readonly ITransactionalState<PlayerBalanceState> _balance;
     private readonly IOptionsMonitor<PlayerSessionOptions> _sessionOptions;
+    private readonly IOptionsMonitor<IdempotencyOptions> _idempotencyOptions;
     private readonly TimeProvider _time;
     private readonly ILogger<PlayerGrain> _logger;
 
@@ -41,11 +46,13 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
         [TransactionalState("balance", PlayerServiceStorage.TransactionStore)]
         ITransactionalState<PlayerBalanceState> balance,
         IOptionsMonitor<PlayerSessionOptions> sessionOptions,
+        IOptionsMonitor<IdempotencyOptions> idempotencyOptions,
         TimeProvider time,
         ILogger<PlayerGrain> logger)
     {
         _balance = balance;
         _sessionOptions = sessionOptions;
+        _idempotencyOptions = idempotencyOptions;
         _time = time;
         _logger = logger;
     }
@@ -60,10 +67,50 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             state.GiftsReceived,
             _lastActive));
 
-    // TODO(Phase 3): PerformUpdate -> ledger check under "score:{requestId}" -> apply -> ledger
-    // write -> prune; publish PlayerScoreUpdated (absolute) to scores/global after commit.
-    public Task<ScoreOutcome> AddPointsAsync(int points, string requestId) =>
-        throw new NotImplementedException("Phase 3 - atomic + idempotent score updates.");
+    /// <summary>
+    /// Ledger check, apply and ledger write happen in the same <c>PerformUpdate</c> against
+    /// transactional state, so a duplicate <paramref name="requestId"/> can never be missed by two
+    /// simultaneous callers - both land on this grain's single activation, and whichever runs
+    /// second sees the entry the first one wrote (plan §5.3). The stream publish that follows only
+    /// runs when this call actually applied a fresh change, never for a replay.
+    /// </summary>
+    public async Task<ScoreOutcome> AddPointsAsync(int points, string requestId)
+    {
+        var key = $"score:{requestId}";
+        var now = _time.GetUtcNow();
+        var maxEntries = _idempotencyOptions.CurrentValue.MaxEntriesPerPlayer;
+        var ttl = _idempotencyOptions.CurrentValue.Ttl;
+
+        var outcome = await _balance.PerformUpdate(state =>
+        {
+            if (state.Ledger.TryGet(key, out var existing) && existing.Score is not null)
+            {
+                return existing.Score with { Replayed = true };
+            }
+
+            state.Balance += points;
+
+            var stats = new PlayerStats(PlayerId, state.Balance, state.GiftsSent, state.GiftsReceived, now);
+            var result = new ScoreOutcome(stats, false);
+
+            state.Ledger.Record(key, new LedgerEntry { RecordedAt = now, Score = result });
+            state.Ledger.Prune(now, maxEntries, ttl);
+
+            return result;
+        });
+
+        if (!outcome.Replayed)
+        {
+            _lastActive = now;
+
+            var provider = this.GetStreamProvider(PlayerServiceStreams.ProviderName);
+            var stream = provider.GetStream<PlayerScoreUpdated>(PlayerServiceStreams.Scores);
+            await stream.OnNextAsync(new PlayerScoreUpdated(
+                ImmutableArray.Create(new PlayerScore(PlayerId, outcome.Stats.Balance))));
+        }
+
+        return outcome;
+    }
 
     // TODO(Phase 4): ledger check under "gift:{requestId}", funds check, debit, GiftsSent++ and
     // ledger write in a single PerformUpdate, so all of it commits or rolls back together.
