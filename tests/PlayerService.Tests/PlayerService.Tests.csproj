@@ -2,9 +2,18 @@
 
   <PropertyGroup>
     <IsPackable>false</IsPackable>
+
+    <!-- The only project that does not target net8.0, and deliberately so. WebApplicationFactory
+         hosts the API in-process, so its test host must match the ASP.NET Core shared framework the
+         process actually runs on - which, with RollForward=LatestMajor and no .NET 8 runtime
+         installed, is 10.0.x. An 8.0.x test host against the 10.0 runtime fails on every JSON
+         response. The shipped assemblies are unaffected: src/ still targets net8.0, and a net10.0
+         test project consumes those net8.0 libraries normally. -->
+    <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="Microsoft.Orleans.TestingHost" />
     <PackageReference Include="xunit" />

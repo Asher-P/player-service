@@ -6,6 +6,13 @@
     <PackageReference Include="Microsoft.Orleans.Transactions" />
   </ItemGroup>
 
+  <ItemGroup Label="Observability">
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\PlayerService.Abstractions\PlayerService.Abstractions.csproj" />
     <ProjectReference Include="..\PlayerService.Grains\PlayerService.Grains.csproj" />

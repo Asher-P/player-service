@@ -5,13 +5,12 @@ puzzle-game backend: sessions, scores, gifting and a leaderboard, with no databa
 
 Implementation plan: [docs/plan/player-service-plan.md](docs/plan/player-service-plan.md).
 
-> **Status: Phases 1-5 complete - the service is functionally done.** Sessions (one per device,
-> supersede across devices, sliding 2-minute TTL), atomic and idempotent score updates, gifting as a
-> distributed transaction (points conserved, balances never negative, `p1↔p2` in a tight loop does
-> not deadlock, replays return the original outcome byte-for-byte), and a push leaderboard whose
-> ingest is a single cluster-wide writer and whose reads are wait-free pod-local snapshots that
-> converge across pods. Phase 6 remains: the concurrency harness, observability, and filling in the
-> README sections below. See [Phase status](#phase-status).
+> **Status: complete.** Sessions (one per device, supersede across devices, sliding 2-minute TTL),
+> atomic and idempotent score updates, gifting as a distributed transaction (points conserved,
+> balances never negative, `p1↔p2` in a tight loop does not deadlock, replays return the original
+> outcome byte-for-byte), a push leaderboard whose ingest is a single cluster-wide writer and whose
+> reads are wait-free pod-local snapshots converging across pods, **39 tests** on a two-silo cluster
+> plus an HTTP-level harness, and OpenTelemetry metrics and tracing.
 
 ---
 
@@ -101,10 +100,10 @@ would cost every gift a second transactional participant.
 | --- | --- | --- |
 | 1 | Skeleton, Orleans topology, contracts, 2-silo test cluster | **Done** |
 | 2 | Sessions and auth (duplicate-device 409, supersede/release, sliding TTL) | **Done** |
-| 3 | Atomic + idempotent score updates | `AddPointsAsync` live: transactional apply, ledger check/write/prune, publishes `PlayerScoreUpdated` |
-| 4 | Gifting via Orleans transactions | `GiftService` live: API-layer transaction, debit + credit + ledger write, bounded retry on abort |
+| 3 | Atomic + idempotent score updates | **Done** - transactional apply, ledger check/write/prune, publishes `PlayerScoreUpdated` |
+| 4 | Gifting via Orleans transactions | **Done** - API-layer transaction, debit + credit + ledger write, bounded retry on abort |
 | 5 | Leaderboard ingest + push cache | **Done** - stream ingest applies absolute scores to `Dictionary` + `SortedSet`, broadcasts Top-N on change, pods converge |
-| 6 | Concurrency harness, observability, README | Not started |
+| 6 | Concurrency harness, observability, README | **Done** - 39 tests incl. HTTP-level harness, OpenTelemetry metrics + tracing, this README |
 
 ---
 
@@ -114,50 +113,356 @@ would cost every gift a second transactional participant.
 src/PlayerService.Abstractions   grain interfaces, wire models, events, stream identity
 src/PlayerService.Grains         PlayerGrain, DeviceGrain, LeaderboardGrain + internals
 src/PlayerService.Api            controllers, DI/silo composition, auth filter, cache, gift service
-tests/PlayerService.Tests        xUnit over a two-silo InProcessTestCluster
+tests/PlayerService.Tests        xUnit: two-silo InProcessTestCluster + WebApplicationFactory
 ```
 
 ---
 
-<!-- The sections below are the headings the final README must fill (plan §6, Phase 6). -->
+## Tests
+
+```bash
+dotnet test
+```
+
+39 tests, no `Thread.Sleep`-based timing anywhere: time is either advanced by hand through an
+injected `TimeProvider` or polled to a deadline.
+
+| Suite | Cluster | What it establishes |
+| --- | --- | --- |
+| `TopologyTests` | 2-silo | The topology is real: two silos, grains resolve, streams subscribe |
+| `SessionTests` | 2-silo | Duplicate-device login rejected, supersede across devices, release |
+| `SessionExpiryTests` | 2-silo, **manual clock** | Sliding TTL, lazy expiry, mutual-supersede does not deadlock |
+| `ScoreTests` | 2-silo | N parallel adds sum exactly; 100 parallel duplicates apply once |
+| `GiftTests` | 2-silo | Conservation, no negative balance, `p1↔p2` terminates, replay-after-offline, offline/overdraw rejected |
+| `LeaderboardTests` | 2-silo, cache per silo | Ingest correctness, gift moves both players, **both pods converge** |
+| `ApiContractTests` | `WebApplicationFactory` | The status-code map over real HTTP: 200/400/401/403/404/409 |
+
+Two silos everywhere is deliberate. On one silo, "single activation cluster-wide" is
+indistinguishable from a local dictionary, and none of the guarantees above would be under test.
+
+### Concurrency scenarios from the brief
+
+| Scenario | Test |
+| --- | --- |
+| N concurrent score adds on one player, nothing lost | `N_parallel_score_posts_sum_exactly` |
+| Same `requestId` ×100 simultaneously, applied once | `Duplicate_requestId_fired_in_parallel_applies_once` |
+| Duplicate `deviceId` login in parallel, one wins | `Concurrent_logins_on_one_device_grant_exactly_one_session` |
+| Points conserved under concurrent random-pair gifts | `Many_concurrent_gifts_across_random_pairs_conserve_points` |
+| `p_1→p_2` and `p_2→p_1` in a tight loop, no deadlock | `Gifts_in_both_directions_between_one_pair_do_not_deadlock` |
+| Balance never negative under concurrent overdraw | `Two_simultaneous_gifts_that_together_overdraw_let_only_one_through` |
+| Gift to offline player rejected, no points moved | `A_gift_to_an_offline_player_is_rejected_and_moves_no_points` |
+| Replay after recipient went offline returns original | `A_gift_replayed_after_the_recipient_went_offline_still_returns_the_original` |
+| Leaderboard correct after a concurrent burst | `The_board_converges_on_the_true_scores_after_a_burst` |
+| Both pods agree on the same Top-N | `Both_pods_converge_on_the_same_snapshot` |
+
+---
+
+## Observability
+
+```bash
+dotnet run --project src/PlayerService.Api
+```
+
+Metrics and traces are on by default via the console exporter; set `Observability:OtlpEndpoint` to
+ship to a collector instead, or `Observability:Enabled: false` to turn export off (the instruments
+stay live either way).
+
+- **`Microsoft.Orleans` meter** — grain call latency (`orleans-app-requests-latency-*`), activation
+  counts, and `orleans-transactions-started` / `-successful` / `-failed` / `-throttled`.
+- **`PlayerService` meter** — the things Orleans cannot see: `gift.attempts` vs `gift.aborts`,
+  `gift.attempts_per_request` (a histogram whose tail is what predicts 503s), and `gift.outcomes` /
+  `score.outcomes` tagged by result, so replay rate shows how chatty the clients really are.
+- **Tracing** — `silo.AddActivityPropagation()` carries the ambient `Activity` across grain calls,
+  so one HTTP request is one trace. A gift shows up as `POST players/{playerId}/gifts` with
+  `IPlayerGrain/DebitForGiftAsync`, `IPlayerGrain/CreditFromGiftAsync` and
+  `ITransactionManagerExtension/PrepareAndCommit` nested beneath it, rather than as four unrelated
+  traces.
+
+Abort rate is the metric worth watching. An abort followed by a successful retry is invisible to the
+client and is **not** an error — it is the design working. What matters is the ratio: aborts climbing
+against attempts means the retry budget is approaching exhaustion, and that is a configuration
+decision (`Gifting:MaxAttempts`, `RetryBaseDelay`), not a code change.
+
+---
 
 ## The Orleans concurrency model, and why there are no lost updates
 
-_TODO(Phase 6)._
+A **grain** is a virtual actor: an object with a durable identity (here, `playerId`) that Orleans
+guarantees has **at most one activation cluster-wide**. `GetGrain<IPlayerGrain>("p1")` from any pod
+routes to that one activation, wherever it lives. You never ask which pod owns a player, because the
+question is not expressible.
+
+Within an activation, Orleans runs **one turn at a time**. A turn is the synchronous stretch of a
+method between `await` points. Concurrent requests to the same grain queue and execute one after
+another — not in parallel with locks around them, but genuinely one at a time.
+
+That is the whole lost-update story:
+
+```csharp
+state.Balance += points;   // read-modify-write, no lock, and correct
+```
+
+A lost update requires two threads to interleave between the read and the write. On a grain there is
+no second thread: the runtime's per-activation queue is the serialization, and it holds across the
+cluster rather than within one process. `N_parallel_score_posts_sum_exactly` fires 50 concurrent
+adds at one player and the total is exact.
+
+Two consequences worth naming:
+
+- **There is no global lock, and could not be.** Activations are independent. A hot player
+  serializes only itself; player A's queue has nothing to do with player B's. Reads of one player
+  never queue behind writes to another because they are different queues on possibly different
+  silos.
+- **`[Reentrant]` on `PlayerGrain` does not weaken this.** It is an Orleans hard requirement for
+  grains using `ITransactionalState`: the transaction protocol delivers prepare/commit callbacks
+  into the grain while it is still awaiting other participants, so a non-reentrant grain would
+  deadlock against its own transaction. It buys interleaving *with the transaction runtime*. The
+  invariant that keeps it safe is stated on the interface and honored by every method: **anything
+  mutating plain, non-transactional state completes its read-modify-write within one turn, with no
+  `await` in between.** Transactional state is protected by transaction isolation instead, which is
+  a stronger guarantee and does not depend on turn boundaries.
 
 ## Why there is no lock ordering, and what replaced it
 
-_TODO(Phase 6)._
+Lock ordering exists to break cycles in a *wait-for* graph. It is only necessary if something is
+held while something else is acquired. This design has no such thing, for two independent reasons.
+
+**There is no lock to order.** Per-player mutual exclusion is the runtime's activation queue, not a
+`lock` we took. There is no ordinal comparison of player IDs anywhere in the codebase, and searching
+for one is how you confirm it.
+
+**The call graph is a tree, so no cycle exists to break.** Gifting could have been
+`senderGrain.SendGift()` calling `recipientGrain.Credit()`. That is a genuine cycle: `p_1→p_2` and
+`p_2→p_1` firing together deadlock at the activation level, which is exactly what the brief tests
+for. Instead, `GiftService` — at the **API layer** — opens the transaction and calls both grains
+itself:
+
+```
+GiftService ──▶ sender    (debit)
+            ──▶ recipient (credit)
+            ──▶ sender    (record outcome)
+```
+
+Sender never calls recipient. With no edge between them, there is no cycle, and activation-level
+deadlock is not merely avoided but unrepresentable.
+
+**Contention resolves by abort, not by blocking.** Two transactions touching the same pair in
+opposite order conflict at the transactional-state layer. Orleans aborts one; it never blocks both.
+`GiftService` retries with exponential, fully-jittered backoff, which is safe *precisely because the
+operation is idempotent* — if the aborted attempt had in fact committed, the retry finds the ledger
+entry and returns the original outcome. `Gifts_in_both_directions_between_one_pair_do_not_deadlock`
+runs both directions concurrently and every request terminates.
+
+One thing this cost us, and it is worth stating: Orleans' **default** lock timeouts (8 s / 10 s)
+exceed the gift methods' 5 s `[ResponseTimeout]`, so contention surfaced as a call timeout rather
+than a clean abort, and burned the whole retry budget. Both are now configured below the response
+timeout. Removing lock ordering does not remove the need to think about timeouts — it relocates it.
 
 ## Idempotency: two simultaneous duplicates, and how records stay bounded
 
-_TODO(Phase 6)._
+Keys are `score:{requestId}` and `gift:{requestId}`, in a ledger stored **inside the player's
+transactional state**. The grain key already scopes them to one player, so `{playerId, requestId}`
+and `{senderId, requestId}` are naturally distinct namespaces on distinct grains. The stored value
+is the **exact outcome DTO the original attempt returned**, so a replay is byte-for-byte stable
+rather than merely "also successful".
+
+**Two duplicates in flight at the same instant.** Both target the same grain key, so Orleans routes
+both to the same activation:
+
+- *Score adds* run in different **turns**. The check and the apply are in the same turn, so there is
+  no window between them. Whichever runs second sees the ledger entry the first wrote and returns
+  it. `Duplicate_requestId_fired_in_parallel_applies_once` fires 100 at once: one applies, 99
+  replay, all 100 responses identical.
+- *Gifts* run in different **transactions** against the same transactional state under serializable
+  isolation. The second either observes the committed entry, or conflicts, aborts, retries, and then
+  observes it. There is no interleaving in which both miss and both apply.
+
+**The entry commits with the effect it describes.** The ledger write is in the same transaction as
+the debit. If the transaction aborts, the entry rolls back with it — we never record a success that
+did not happen. The old `IMemoryCache` design had to argue for this; here it is structural.
+
+**Rejections are the deliberate exception.** A rejected gift *aborts* its transaction, so an
+in-transaction record would roll back along with the rejection it describes, and the replay would
+re-run the whole attempt. Rejections are therefore recorded in a **separate, non-transactional**
+write issued after the abort. This asymmetry is intentional and is the one place the "record commits
+with its effect" rule is knowingly broken — because for a rejection, there is no effect to commit
+with.
+
+**Bounding.** FIFO capped at **256 entries per player** with a **10-minute TTL**, pruned lazily on
+each write. No per-player timer: millions of grain timers is itself the anti-pattern. Combined with
+`CollectionAge` of 15 minutes, an idle player's activation and its ledger leave memory entirely.
+
+**What that costs.** Once a record is gone — TTL, cap overflow, or a collected activation — a late
+replay is treated as brand new and may re-apply. This is acceptable because the TTL vastly exceeds
+the client retry window (seconds, per the brief), and it is a deliberate bound-memory-first trade
+rather than an oversight.
 
 ## The recipient-online guarantee, stated exactly
 
-_TODO(Phase 6)._
+> **If the recipient's session had not expired as of the transaction's commit point, the gift
+> applies. An expiry occurring strictly after commit does not roll it back.**
+
+What makes it non-stale is *where* the check runs: on the **recipient's own activation, inside the
+same transaction as the credit**, reading that grain's own session expiry. It is not a lookup in a
+shared table that could be out of date by the time the credit lands. If the recipient is offline,
+`CreditFromGiftAsync` throws, the entire transaction aborts, and **nothing is debited** — verified by
+`A_gift_to_an_offline_player_is_rejected_and_moves_no_points`.
+
+What is **not** promised: that the recipient is still online a moment later. No design can promise
+that; a session can lapse the instant after commit. The guarantee is about staleness relative to the
+write, not about the future.
+
+The session fields are **read, never written**, inside the gift transaction, so the fact that they
+are plain non-transactional state introduces no rollback hazard.
+
+One honest limitation. "Never logged in" is inferred from the recipient grain having no bound
+session, and that state is activation-local. After the activation is collected, a known-but-offline
+player reports as `UnknownRecipient` (404) rather than `Offline` (409). The gift is correctly refused
+either way — only the status code is affected. Fixing it means moving liveness into transactional
+state, at the cost of a second transactional participant on every gift.
 
 ## Leaderboard: structure, complexity and staleness
 
-_TODO(Phase 6)._
+One `LeaderboardGrain` (key `0`) is the cluster's sole writer, holding two collections:
+
+| Structure | Purpose | Complexity |
+| --- | --- | --- |
+| `Dictionary<string, PlayerScore>` | O(1) lookup of a player's *current* entry, so the stale one can be found | O(1) |
+| `SortedSet<PlayerScore>` ordered by score desc, playerId asc | The ranking | O(log U) remove + O(log U) add |
+
+Applying one score is therefore **O(log U)** in the number of players, and reading Top-N off the
+front of the set is **O(N)**. Nothing sorts all players per request, ever.
+
+Two details that are load-bearing rather than incidental:
+
+- **The tie-breaker is required, not cosmetic.** A `SortedSet` treats "compares equal" as "the same
+  element", so without `playerId` in the comparison, two players on the same score would collapse
+  into one entry.
+- **The set holds every player, not just the top N.** A player who gifts points away must be able to
+  fall out of the top N and later climb back in. Keeping only N entries would make that
+  unrecoverable.
+
+**Ingest is single-writer**, so no locks and no concurrent collections — the same property the
+in-process `BackgroundService` had, now with cluster-wide scope. Events carry **absolute** scores,
+never deltas, which is what makes the projection idempotent under Orleans' at-least-once stream
+delivery: a redelivered event re-states the truth instead of double-counting. A gift arrives as
+**one** event carrying both sides, so the pair is absorbed together rather than showing an instant
+where the points exist twice.
+
+**Staleness: bounded by stream delivery + the 1 s broadcast interval, so typically under ~1.1 s.**
+The bound is returned to the client as `ComputedAt`, so it is observable rather than merely
+documented. This is the deliberate trade: a strongly-consistent read would reintroduce the hot grain
+the entire design exists to avoid, and a leaderboard is inherently an approximate, read-mostly view.
+
+The one real bottleneck is **ingest** — every score change funnels into one activation. Stream
+batching absorbs a lot and 1 s coalescing keeps the publish side cheap. If ingest ever saturates,
+the escape hatch is to shard into M `LeaderboardShardGrain`s keyed by `hash(playerId) % M`, each
+publishing its local top-N to a merge grain. Documented, measured before adopted, not built
+speculatively.
 
 ## The push-cache strategy and what invalidates it
 
-_TODO(Phase 6)._
+`GET /leaderboard` **never touches the leaderboard grain**. Millions of readers pulling from one
+activation is the textbook hot-grain anti-pattern. Inverting it:
+
+1. A grain timer fires every **1 s**. If the set changed since the last publish, the grain broadcasts
+   a `LeaderboardSnapshot` to `leaderboard/top`.
+2. `LeaderboardCache` — an `IHostedService` on **every** pod — subscribes and swaps a
+   `volatile LeaderboardSnapshot` reference on each message. Reference assignment is atomic in .NET;
+   `volatile` guarantees other threads see the new one.
+3. The controller returns that field. **O(1), wait-free, zero network hops, zero grain calls.**
+
+Read throughput is therefore independent of the grain entirely and scales with pod count. This is a
+fix, not a mitigation: the bottleneck is removed rather than made rarer.
+
+**What invalidates it: nothing.** That is the point, and it is why there is no cache stampede. A
+stampede needs an expiry that triggers recomputation — many readers finding an empty cache and all
+recomputing at once. Here the snapshot is *always present and always pre-computed*; it is replaced
+by a push, never invalidated by a read. There is no code path in which serving a request causes work.
+
+Two supporting details:
+
+- **Priming.** On startup each pod pulls once with `GetTopAsync()`, so it is never blank waiting for
+  the first broadcast. That is one call per pod *lifetime*, not per request.
+- **Publish-on-change.** A quiet cluster broadcasts nothing, so idle pods cost nothing.
+- **Monotonic application.** The cache ignores a snapshot older than the one it holds, so
+  out-of-order delivery cannot move a pod backwards in time.
+
+`Both_pods_converge_on_the_same_snapshot` asserts what the model claims: two pods reach the *truth*
+(not merely agree with each other, which agreeing on stale data would also satisfy) and land on the
+same broadcast.
 
 ## Session expiry policy
 
-_TODO(Phase 6)._
+- **One session per device.** `IDeviceGrain`, keyed by `deviceId`, is the login gate. Its single
+  activation is the atomic primitive `ConcurrentDictionary.TryAdd` used to be — except it now holds
+  across the whole cluster. Simultaneous logins serialize into separate turns; the second sees the
+  live session and the API returns **409**.
+- **Second device supersedes.** A new-device login binds a fresh grant on the player grain, which
+  returns the displaced one so the caller can release that device. The prior token stops validating
+  immediately. Rationale: it preserves "one online session per player", which is what keeps the gift
+  online-check a single unambiguous read. Rejecting instead would be defensible; supersede was
+  chosen for UX and a cleaner predicate.
+- **Sliding TTL of 2 minutes.** Any authenticated request slides the expiry. A device idle for one
+  minute keeps its session (TTL > 60 s, as required); a crashed device stops sliding and lapses
+  after 2 minutes rather than being locked out forever.
+- **Expiry is lazy** — evaluated on read, never swept. A timer per player is the same anti-pattern
+  the idempotency ledger avoids. `CollectionAge` reclaims the memory of anything genuinely idle.
+- **Token format `{playerId}.{guid}`.** The auth filter parses the prefix locally and makes exactly
+  **one** grain call, `ValidateAndSlideSessionAsync`, which validates and slides in a single turn. No
+  token-lookup grain, no directory scan.
+- **`[AlwaysInterleave]` on session methods** so authentication never queues behind a slow score
+  transaction on a hot player. Safe because those methods touch only plain session fields and
+  contain no `await`.
+
+That last point is load-bearing in a way worth flagging: `ReleaseAsync` **must** interleave. Two
+devices can supersede each other simultaneously, and if release queued behind that device's own
+in-flight login, the two grains would wait on each other — a real deadlock. This was verified by
+removing the attribute and watching
+`Devices_superseding_each_other_simultaneously_do_not_deadlock` hang, then restoring it.
 
 ## Assumptions
 
-_TODO(Phase 6)._
+- **Player and device IDs are opaque strings.** No ordering assumption is needed anywhere, since
+  nothing is lock-ordered.
+- **A session token is a bearer credential, not real auth.** Per the brief. It authenticates exactly
+  one player, and that player may act only on their own resources (hence the `403`).
+- **Clients retry within seconds**, so a 10-minute idempotency TTL vastly exceeds the replay window.
+  A replay arriving after eviction is treated as new — accepted, and bounded memory is the reason.
+- **A terminal outcome is terminal.** A rejected gift replays as the same rejection even if the
+  condition has since cleared. A client wanting a genuinely new attempt uses a new `requestId`.
+- **Transaction aborts under contention are expected, not exceptional.** The retry budget (8
+  attempts, jittered) and the resulting `503` are part of the contract.
+- **State is lost on restart.** Memory providers only, per the "no database" constraint. Swapping in
+  `AddRedisGrainStorage` is a configuration change, not a code change, because no grain sees the
+  provider.
+- **The leaderboard is rebuildable**, so its projection is not persisted and its broadcast timer is
+  a grain timer rather than a durable reminder.
+- **`N = 100`** for Top-N, configurable. The grain holds all players regardless.
+
+### Honest note on Orleans for this brief
+
+For a genuinely single-process service, the in-memory design with a `ConcurrentDictionary` and
+per-player locks would have been cheaper and equally correct. Orleans is substantially more
+machinery. What it buys is that the concurrency guarantees are **inherited from the runtime rather
+than hand-written** — no lock ordering to get right, no atomic-check-then-act to argue about — and
+that the same design survives horizontal scale-out, which the locking version does not: a double
+lock cannot span two silos, so gifting would have had to be redesigned rather than rehosted.
 
 ---
 
 ## Local environment note
 
-The projects target `net8.0` per the assignment. This machine has only the .NET 9/10 runtimes
-installed, so `Directory.Build.props` sets `<RollForward>LatestMajor</RollForward>`: the assemblies
-are still net8.0, they just run on the newest installed runtime. Remove it if you have the .NET 8
-runtime and prefer the exact-version behaviour.
+The shipped projects target `net8.0` per the assignment. This machine has only the .NET 9/10
+runtimes installed, so `Directory.Build.props` sets `<RollForward>LatestMajor</RollForward>`: the
+assemblies are still net8.0, they just run on the newest installed runtime. Remove it if you have
+the .NET 8 runtime and prefer exact-version behaviour.
+
+**The test project is the one exception: it targets `net10.0`.** `WebApplicationFactory` hosts the
+API in-process, so its test host has to match the ASP.NET Core shared framework the process actually
+runs on — which, given the roll-forward above, is 10.0.x. An 8.0.x test host against the 10.0 runtime
+throws `PipeWriter 'ResponseBodyPipeWriter' does not implement PipeWriter.UnflushedBytes` on every
+JSON response, because `System.Text.Json` 10 requires an API the older host does not have. Nothing
+shipped is affected — `src/` is still net8.0, and a net10.0 test project consumes those net8.0
+libraries normally. On a machine with the .NET 8 runtime installed, the test project can go back to
+net8.0 with an 8.0.x `Microsoft.AspNetCore.Mvc.Testing`.

@@ -15,7 +15,8 @@ builder.Services.AddProblemDetails();
 builder.Services
     .AddSessions(builder.Configuration)
     .AddGifting(builder.Configuration)
-    .AddLeaderboard(builder.Configuration);
+    .AddLeaderboard(builder.Configuration)
+    .AddPlayerServiceObservability(builder.Configuration);
 
 var app = builder.Build();
 

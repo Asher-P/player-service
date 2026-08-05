@@ -3,6 +3,7 @@
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <OrleansVersion>10.2.2</OrleansVersion>
+    <OpenTelemetryVersion>1.17.0</OpenTelemetryVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,7 +14,18 @@
     <PackageVersion Include="Microsoft.Orleans.TestingHost" Version="$(OrleansVersion)" />
   </ItemGroup>
 
+  <ItemGroup Label="Observability">
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="$(OpenTelemetryVersion)" />
+    <PackageVersion Include="OpenTelemetry.Exporter.Console" Version="$(OpenTelemetryVersion)" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="$(OpenTelemetryVersion)" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="$(OpenTelemetryVersion)" />
+  </ItemGroup>
+
   <ItemGroup Label="Test">
+    <!-- Must match the ASP.NET Core shared framework the tests actually run on (10.0.x). The 8.0.x
+         test host predates PipeWriter.UnflushedBytes, which System.Text.Json 10 requires, so an
+         8.0.x host throws on every JSON response written through it. -->
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.8" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageVersion Include="xunit" Version="2.9.2" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
