@@ -5,11 +5,13 @@ puzzle-game backend: sessions, scores, gifting and a leaderboard, with no databa
 
 Implementation plan: [docs/plan/player-service-plan.md](docs/plan/player-service-plan.md).
 
-> **Status: Phases 1-2 complete.** The topology is real and running - a co-hosted silo, three
+> **Status: Phases 1-3 complete.** The topology is real and running - a co-hosted silo, three
 > grains, transactions, memory streams, the leaderboard projection and the pod-local push cache -
-> and sessions are fully implemented: one session per device, supersede across devices, sliding
-> 2-minute TTL. Scores, gifting and the leaderboard projection land in phases 3-5; every stub is
-> marked `TODO(Phase N)` in code. See [Phase status](#phase-status).
+> sessions are fully implemented (one session per device, supersede across devices, sliding
+> 2-minute TTL), and score updates are atomic and idempotent: concurrent adds sum exactly, and a
+> duplicate `requestId` replays the original outcome byte-for-byte. Gifting and the leaderboard
+> projection land in phases 4-5; every stub is marked `TODO(Phase N)` in code. See
+> [Phase status](#phase-status).
 
 ---
 
@@ -50,7 +52,7 @@ All endpoints except `POST /login` require the `X-Session-Token` header.
 | --- | --- | --- | --- |
 | `POST /login` | `200` + token | `400` bad body, `409` device already has an active session | No (handle the 409) |
 | `GET /players/{id}/stats` | `200` + stats | `401` missing/expired/superseded token, `403` token belongs to another player | Yes |
-| `POST /players/{id}/stats/score` | `200` + current stats | `400` non-positive points, `401`, `403` | **Yes** - same `requestId` returns the same result |
+| `POST /players/{id}/stats/score` | `200` + current stats | `400` non-positive points, `401`, `403`, `503` transaction aborted | **Yes** - same `requestId` returns the same result |
 | `POST /players/{id}/gifts` | `200` + result | `400` self-gift / non-positive, `401`, `403`, `404` unknown recipient, `409` recipient offline **or** insufficient funds, `503` transaction aborted after retries | **Yes** - same `requestId` returns the original outcome |
 | `GET /leaderboard` | `200` + top N + `ComputedAt` | `401` | Yes (wait-free local read) |
 
@@ -76,7 +78,7 @@ Two deviations from the plan's §5.7 table, both deliberate:
 | --- | --- | --- |
 | 1 | Skeleton, Orleans topology, contracts, 2-silo test cluster | **Done** |
 | 2 | Sessions and auth (duplicate-device 409, supersede/release, sliding TTL) | **Done** |
-| 3 | Atomic + idempotent score updates | `POST .../score` returns `501`; `AddPointsAsync` is `TODO(Phase 3)` |
+| 3 | Atomic + idempotent score updates | `AddPointsAsync` live: transactional apply, ledger check/write/prune, publishes `PlayerScoreUpdated` |
 | 4 | Gifting via Orleans transactions | `POST .../gifts` returns `501`; debit/credit and `GiftService` are `TODO(Phase 4)` |
 | 5 | Leaderboard ingest + push cache | Streams, subscription, timer and cache all live; the projection's apply step is `TODO(Phase 5)`, so the board stays empty |
 | 6 | Concurrency harness, observability, README | Not started |
