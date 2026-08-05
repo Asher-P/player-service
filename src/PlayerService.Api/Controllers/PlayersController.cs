@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Orleans;
 using Orleans.Transactions;
+using PlayerService.Abstractions.Errors;
 using PlayerService.Abstractions.Grains;
 using PlayerService.Abstractions.Models;
 using PlayerService.Api.Auth;
@@ -75,18 +76,47 @@ public sealed class PlayersController : ControllerBase
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
-    public ActionResult<GiftResponse> SendGift(string playerId, GiftRequest request)
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<GiftResponse>> SendGiftAsync(
+        string playerId,
+        GiftRequest request,
+        CancellationToken cancellationToken)
     {
         if (OwnershipFailure(playerId) is { } failure)
         {
             return failure;
         }
 
-        // TODO(Phase 4): var outcome = await _gifts.SendGiftAsync(
-        //       playerId, request.ToPlayerId, request.Points, request.RequestId, ct);
-        //   map: applied -> 200; SelfGift -> 400; Offline/InsufficientFunds -> 409;
-        //        UnknownRecipient -> 404; retries exhausted -> 503.
-        return NotImplementedYet("Gifting via Orleans transactions lands in Phase 4.");
+        GiftOutcome outcome;
+        try
+        {
+            outcome = await _gifts.SendGiftAsync(
+                playerId, request.ToPlayerId, request.Points, request.RequestId, cancellationToken);
+        }
+        catch (OrleansTransactionAbortedException)
+        {
+            return TransactionAborted();
+        }
+
+        if (outcome.Applied)
+        {
+            return Ok(new GiftResponse(true, outcome.SenderBalance, outcome.RecipientBalance, outcome.Replayed));
+        }
+
+        // The rejection reason is what tells the client whether retrying could ever help: a self-gift
+        // never can, an offline recipient or a short balance might once that changes.
+        return outcome.Rejection switch
+        {
+            GiftRejection.SelfGift => Rejected(
+                StatusCodes.Status400BadRequest, "Self-gift", "A player cannot gift points to themselves."),
+            GiftRejection.UnknownRecipient => Rejected(
+                StatusCodes.Status404NotFound, "Unknown recipient", "The recipient has never logged in."),
+            GiftRejection.Offline => Rejected(
+                StatusCodes.Status409Conflict, "Recipient offline", "The recipient had no live session; no points moved."),
+            GiftRejection.InsufficientFunds => Rejected(
+                StatusCodes.Status409Conflict, "Insufficient funds", "The sender's balance is short of the points requested."),
+            _ => Rejected(StatusCodes.Status409Conflict, "Gift rejected", "The gift was not applied."),
+        };
     }
 
     /// <summary>
@@ -120,15 +150,10 @@ public sealed class PlayersController : ControllerBase
         stats.GiftsReceived,
         stats.LastActive);
 
-    private ObjectResult NotImplementedYet(string detail) =>
-        new(new ProblemDetails
+    private static ObjectResult Rejected(int statusCode, string title, string detail) =>
+        new(new ProblemDetails { Status = statusCode, Title = title, Detail = detail })
         {
-            Status = StatusCodes.Status501NotImplemented,
-            Title = "Not implemented in Phase 1",
-            Detail = detail,
-        })
-        {
-            StatusCode = StatusCodes.Status501NotImplemented,
+            StatusCode = statusCode,
         };
 
     /// <summary>Transient cluster contention, not a client bug - safe to retry with backoff because

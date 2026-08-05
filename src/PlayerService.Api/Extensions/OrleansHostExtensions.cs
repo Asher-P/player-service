@@ -26,6 +26,20 @@ public static class OrleansHostExtensions
             {
                 // An idle player's activation — and with it, its idempotency ledger — leaves memory.
                 options.CollectionAge = TimeSpan.FromMinutes(15);
+            })
+            .Configure<TransactionalStateOptions>(options =>
+            {
+                // These must stay strictly below the gift methods' [ResponseTimeout] (5s), and the
+                // Orleans defaults (8s / 10s) do not. With the defaults, a transaction queued behind
+                // a contended player hits the call timeout *first*, so contention arrives as a raw
+                // TimeoutException instead of the clean abort the retry loop is built around - and
+                // every retry then burns the full 5s. Resolving contention faster than the call
+                // times out is what turns a hot pair into "abort and retry" rather than "hang".
+                // Fail fast rather than wait long: a contended transaction is better off aborting
+                // and retrying with backoff than holding a queue open, because the retry is free of
+                // correctness risk (the operation is idempotent) while the wait is not free of cost.
+                options.LockTimeout = TimeSpan.FromSeconds(2);
+                options.LockAcquireTimeout = TimeSpan.FromSeconds(1);
             });
 
         // Grain-side-only policy, so it is bound with the silo rather than with an API feature.
