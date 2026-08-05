@@ -5,13 +5,13 @@ puzzle-game backend: sessions, scores, gifting and a leaderboard, with no databa
 
 Implementation plan: [docs/plan/player-service-plan.md](docs/plan/player-service-plan.md).
 
-> **Status: Phases 1-4 complete.** The topology is real and running - a co-hosted silo, three
-> grains, transactions, memory streams, the leaderboard projection and the pod-local push cache -
-> sessions are fully implemented (one session per device, supersede across devices, sliding
-> 2-minute TTL), score updates are atomic and idempotent, and gifting runs as a distributed
-> transaction: points are conserved, balances never go negative, `p1↔p2` in a tight loop does not
-> deadlock, and a replayed `requestId` returns the original outcome byte-for-byte. Only the
-> leaderboard projection's apply step is still `TODO(Phase 5)`. See [Phase status](#phase-status).
+> **Status: Phases 1-5 complete - the service is functionally done.** Sessions (one per device,
+> supersede across devices, sliding 2-minute TTL), atomic and idempotent score updates, gifting as a
+> distributed transaction (points conserved, balances never negative, `p1↔p2` in a tight loop does
+> not deadlock, replays return the original outcome byte-for-byte), and a push leaderboard whose
+> ingest is a single cluster-wide writer and whose reads are wait-free pod-local snapshots that
+> converge across pods. Phase 6 remains: the concurrency harness, observability, and filling in the
+> README sections below. See [Phase status](#phase-status).
 
 ---
 
@@ -103,7 +103,7 @@ would cost every gift a second transactional participant.
 | 2 | Sessions and auth (duplicate-device 409, supersede/release, sliding TTL) | **Done** |
 | 3 | Atomic + idempotent score updates | `AddPointsAsync` live: transactional apply, ledger check/write/prune, publishes `PlayerScoreUpdated` |
 | 4 | Gifting via Orleans transactions | `GiftService` live: API-layer transaction, debit + credit + ledger write, bounded retry on abort |
-| 5 | Leaderboard ingest + push cache | Streams, subscription, timer and cache all live; the projection's apply step is `TODO(Phase 5)`, so the board stays empty |
+| 5 | Leaderboard ingest + push cache | **Done** - stream ingest applies absolute scores to `Dictionary` + `SortedSet`, broadcasts Top-N on change, pods converge |
 | 6 | Concurrency harness, observability, README | Not started |
 
 ---
