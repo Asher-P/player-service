@@ -6,6 +6,7 @@ using Orleans.Concurrency;
 using Orleans.Runtime;
 using Orleans.Streams;
 using Orleans.Transactions.Abstractions;
+using PlayerService.Abstractions.Errors;
 using PlayerService.Abstractions.Events;
 using PlayerService.Abstractions.Grains;
 using PlayerService.Abstractions.Models;
@@ -42,6 +43,14 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
     private SessionGrant? _session;
     private DateTimeOffset _lastActive;
 
+    /// <summary>
+    /// Terminal gift rejections, kept <b>outside</b> the transactional state on purpose: a rejected
+    /// gift aborts its transaction, so anything written in-transaction would roll back with it.
+    /// Same bounding as the transactional ledger; activation-local, so it is lost on deactivation -
+    /// which is the same "replay after eviction is treated as new" trade-off documented in §5.3.
+    /// </summary>
+    private readonly IdempotencyLedger _giftRejections = new();
+
     public PlayerGrain(
         [TransactionalState("balance", PlayerServiceStorage.TransactionStore)]
         ITransactionalState<PlayerBalanceState> balance,
@@ -76,7 +85,7 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
     /// </summary>
     public async Task<ScoreOutcome> AddPointsAsync(int points, string requestId)
     {
-        var key = $"score:{requestId}";
+        var key = ScoreKey(requestId);
         var now = _time.GetUtcNow();
         var maxEntries = _idempotencyOptions.CurrentValue.MaxEntriesPerPlayer;
         var ttl = _idempotencyOptions.CurrentValue.Ttl;
@@ -112,15 +121,105 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
         return outcome;
     }
 
-    // TODO(Phase 4): ledger check under "gift:{requestId}", funds check, debit, GiftsSent++ and
-    // ledger write in a single PerformUpdate, so all of it commits or rolls back together.
-    public Task<int> DebitForGiftAsync(string recipientId, int points, string requestId) =>
-        throw new NotImplementedException("Phase 4 - gifting via Orleans transactions.");
+    /// <summary>
+    /// Funds check and debit are the <b>same statement</b> inside one <c>PerformUpdate</c>, so two
+    /// concurrent 100-point gifts from a 100-point balance cannot both pass: serializable isolation
+    /// means the second either sees the first's committed effect or conflicts and aborts. That is
+    /// what makes "a balance never goes negative" structural rather than checked-then-hoped.
+    /// </summary>
+    public async Task<int> DebitForGiftAsync(string recipientId, int points, string requestId)
+    {
+        var key = GiftKey(requestId);
 
-    // TODO(Phase 4): online check evaluated here, on the recipient's own activation, inside the
-    // gift transaction - throwing aborts the whole transfer so nothing is debited.
-    public Task<int> CreditFromGiftAsync(string senderId, int points) =>
-        throw new NotImplementedException("Phase 4 - gifting via Orleans transactions.");
+        // Rejections live outside the transaction (see RecordGiftRejectionAsync), so they are
+        // checked separately - but they are just as terminal, and just as replayable.
+        if (_giftRejections.TryGet(key, out var rejected) && rejected.Gift is not null)
+        {
+            throw new GiftReplayException(rejected.Gift);
+        }
+
+        return await _balance.PerformUpdate(state =>
+        {
+            if (state.Ledger.TryGet(key, out var existing) && existing.Gift is not null)
+            {
+                throw new GiftReplayException(existing.Gift);
+            }
+
+            if (state.Balance < points)
+            {
+                throw new GiftRejectedException(
+                    GiftRejection.InsufficientFunds,
+                    $"Balance {state.Balance} is short of the {points} points requested.");
+            }
+
+            state.Balance -= points;
+            state.GiftsSent++;
+            return state.Balance;
+        });
+    }
+
+    /// <summary>
+    /// The online check runs here, on the recipient's own activation, inside the same transaction as
+    /// the credit - which is exactly what makes it non-stale. The guarantee is: if the recipient's
+    /// session had not expired as of the commit point, the gift applies; an expiry strictly after
+    /// commit does not roll it back.
+    /// </summary>
+    /// <remarks>
+    /// The session is <i>read</i>, never written, inside the gift transaction, so the fact that it
+    /// is plain state introduces no rollback hazard. Both reads happen before the first
+    /// <c>await</c>, so nothing can interleave between deciding and acting.
+    /// </remarks>
+    public async Task<int> CreditFromGiftAsync(string senderId, int points)
+    {
+        var session = _session;
+        var now = _time.GetUtcNow();
+
+        if (session is null)
+        {
+            // Grains are virtual, so any playerId activates. "Never had a session bound" is the
+            // closest observable equivalent of "this player does not exist".
+            throw new GiftRejectedException(
+                GiftRejection.UnknownRecipient,
+                $"Player '{PlayerId}' has never logged in.");
+        }
+
+        if (session.ExpiresAt <= now)
+        {
+            throw new GiftRejectedException(
+                GiftRejection.Offline,
+                $"Player '{PlayerId}' has no live session.");
+        }
+
+        return await _balance.PerformUpdate(state =>
+        {
+            state.Balance += points;
+            state.GiftsReceived++;
+            return state.Balance;
+        });
+    }
+
+    public Task CompleteGiftAsync(string requestId, GiftOutcome outcome)
+    {
+        var now = _time.GetUtcNow();
+        var options = _idempotencyOptions.CurrentValue;
+
+        return _balance.PerformUpdate(state =>
+        {
+            state.Ledger.Record(GiftKey(requestId), new LedgerEntry { RecordedAt = now, Gift = outcome });
+            state.Ledger.Prune(now, options.MaxEntriesPerPlayer, options.Ttl);
+        });
+    }
+
+    public Task RecordGiftRejectionAsync(string requestId, GiftOutcome outcome)
+    {
+        var now = _time.GetUtcNow();
+        var options = _idempotencyOptions.CurrentValue;
+
+        _giftRejections.Record(GiftKey(requestId), new LedgerEntry { RecordedAt = now, Gift = outcome });
+        _giftRejections.Prune(now, options.MaxEntriesPerPlayer, options.Ttl);
+
+        return Task.CompletedTask;
+    }
 
     /// <summary>
     /// Single turn, no <c>await</c>: reads the session, decides, slides the expiry, returns.
@@ -172,4 +271,10 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
 
     public Task<bool> IsOnlineAsync() =>
         Task.FromResult(_session is not null && _session.ExpiresAt > _time.GetUtcNow());
+
+    // The grain key already scopes these to one player, so "score:" and "gift:" are all the
+    // namespacing {playerId, requestId} and {senderId, requestId} need to stay distinct.
+    private static string ScoreKey(string requestId) => $"score:{requestId}";
+
+    private static string GiftKey(string requestId) => $"gift:{requestId}";
 }

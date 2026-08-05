@@ -27,10 +27,12 @@ public interface IPlayerGrain : IGrainWithStringKey
     Task<ScoreOutcome> AddPointsAsync(int points, string requestId);
 
     /// <summary>
-    /// Sender side of a gift: idempotency check, funds check, debit and ledger write in one
+    /// Sender side of a gift: idempotency check, then funds check and debit in one
     /// <c>PerformUpdate</c>. <c>Join</c> — it is only ever called inside the gift transaction the
     /// API layer opened. Returns the sender's post-debit balance.
     /// </summary>
+    /// <exception cref="Errors.GiftReplayException">This requestId already has a recorded outcome.</exception>
+    /// <exception cref="Errors.GiftRejectedException">The balance would have gone negative.</exception>
     [Transaction(TransactionOption.Join)]
     [ResponseTimeout("00:00:05")]
     Task<int> DebitForGiftAsync(string recipientId, int points, string requestId);
@@ -40,9 +42,30 @@ public interface IPlayerGrain : IGrainWithStringKey
     /// inside the same transaction as the credit — which is what makes it non-stale. Throws to
     /// abort the whole transaction when the recipient is offline. Returns the post-credit balance.
     /// </summary>
+    /// <exception cref="Errors.GiftRejectedException">The recipient is offline or unknown.</exception>
     [Transaction(TransactionOption.Join)]
     [ResponseTimeout("00:00:05")]
     Task<int> CreditFromGiftAsync(string senderId, int points);
+
+    /// <summary>
+    /// Writes the sender's ledger entry for a gift that is about to commit. Split from
+    /// <see cref="DebitForGiftAsync"/> because the stored outcome includes the <i>recipient's</i>
+    /// post-credit balance, which does not exist until the credit has run — and the entry must be
+    /// the exact outcome the caller receives, or a replay would not be byte-for-byte stable.
+    /// Being in the same transaction is what makes the record commit or roll back with the transfer.
+    /// </summary>
+    [Transaction(TransactionOption.Join)]
+    [ResponseTimeout("00:00:05")]
+    Task CompleteGiftAsync(string requestId, GiftOutcome outcome);
+
+    /// <summary>
+    /// Records a <b>terminal rejection</b> outside any transaction (plan §7.4). A rejected gift
+    /// aborts its transaction, so an in-transaction ledger entry would roll back with it and the
+    /// replay would re-run the whole attempt. This deliberate asymmetry is what keeps a rejected
+    /// requestId replay-stable. Plain activation state, single turn, no <c>await</c>.
+    /// </summary>
+    [AlwaysInterleave]
+    Task RecordGiftRejectionAsync(string requestId, GiftOutcome outcome);
 
     /// <summary>
     /// Reads balance and counters. Transactional rather than <c>[ReadOnly]</c> because

@@ -5,13 +5,13 @@ puzzle-game backend: sessions, scores, gifting and a leaderboard, with no databa
 
 Implementation plan: [docs/plan/player-service-plan.md](docs/plan/player-service-plan.md).
 
-> **Status: Phases 1-3 complete.** The topology is real and running - a co-hosted silo, three
+> **Status: Phases 1-4 complete.** The topology is real and running - a co-hosted silo, three
 > grains, transactions, memory streams, the leaderboard projection and the pod-local push cache -
 > sessions are fully implemented (one session per device, supersede across devices, sliding
-> 2-minute TTL), and score updates are atomic and idempotent: concurrent adds sum exactly, and a
-> duplicate `requestId` replays the original outcome byte-for-byte. Gifting and the leaderboard
-> projection land in phases 4-5; every stub is marked `TODO(Phase N)` in code. See
-> [Phase status](#phase-status).
+> 2-minute TTL), score updates are atomic and idempotent, and gifting runs as a distributed
+> transaction: points are conserved, balances never go negative, `p1↔p2` in a tight loop does not
+> deadlock, and a replayed `requestId` returns the original outcome byte-for-byte. Only the
+> leaderboard projection's apply step is still `TODO(Phase 5)`. See [Phase status](#phase-status).
 
 ---
 
@@ -72,6 +72,29 @@ Two deviations from the plan's §5.7 table, both deliberate:
 
 ---
 
+## Two findings from Phase 4 worth stating plainly
+
+**Orleans' default lock timeouts silently defeat the retry design.** The gift methods carry
+`[ResponseTimeout("00:00:05")]` per the plan, but Orleans resolves transactional lock contention at
+`LockTimeout` 8 s / `LockAcquireTimeout` 10 s by default. A transaction queued behind a contended
+player therefore hit the *call* timeout first, so contention surfaced as a raw `TimeoutException`
+rather than the clean abort the retry loop is built around - and each retry burned the full 5 s.
+Under a 60-gift burst this exhausted the budget and failed. Both values are now configured well
+below the response timeout (2 s / 1 s) in
+[OrleansHostExtensions.cs](src/PlayerService.Api/Extensions/OrleansHostExtensions.cs), and the retry
+budget is sized to actually de-conflict a hot pair (8 attempts, 100 ms exponential + full jitter).
+The same burst now passes in a fraction of the time. Fail fast, back off properly, retry more.
+
+**`UnknownRecipient` is activation-local, and that is a real limitation.** "Never logged in" is
+detected by the recipient grain having no bound session, and sessions are plain activation state by
+design (they are read, never written, inside the gift transaction, so they carry no rollback
+hazard). After the recipient's activation is collected, a known-but-offline player is reported as
+unknown - a `404` where a `409` would be more accurate. The gift is correctly refused either way;
+only the status code is affected. Moving session liveness into transactional state would fix it and
+would cost every gift a second transactional participant.
+
+---
+
 ## Phase status
 
 | Phase | Scope | State |
@@ -79,7 +102,7 @@ Two deviations from the plan's §5.7 table, both deliberate:
 | 1 | Skeleton, Orleans topology, contracts, 2-silo test cluster | **Done** |
 | 2 | Sessions and auth (duplicate-device 409, supersede/release, sliding TTL) | **Done** |
 | 3 | Atomic + idempotent score updates | `AddPointsAsync` live: transactional apply, ledger check/write/prune, publishes `PlayerScoreUpdated` |
-| 4 | Gifting via Orleans transactions | `POST .../gifts` returns `501`; debit/credit and `GiftService` are `TODO(Phase 4)` |
+| 4 | Gifting via Orleans transactions | `GiftService` live: API-layer transaction, debit + credit + ledger write, bounded retry on abort |
 | 5 | Leaderboard ingest + push cache | Streams, subscription, timer and cache all live; the projection's apply step is `TODO(Phase 5)`, so the board stays empty |
 | 6 | Concurrency harness, observability, README | Not started |
 
