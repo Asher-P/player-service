@@ -108,12 +108,36 @@ public sealed class LeaderboardGrain : Grain, ILeaderboardGrain
     /// Ingest. Orleans delivers stream items one batch at a time onto this single activation, so
     /// applying every entry and recomputing Top-N once per batch is natural micro-batching.
     /// </summary>
+    /// <remarks>
+    /// Absolute scores are what make this safe under at-least-once delivery: a redelivered event
+    /// re-states the truth rather than double-counting, so the projection is idempotent and
+    /// self-healing without any dedupe bookkeeping. A gift arrives as one event carrying both
+    /// sides, so the pair is absorbed together instead of showing a moment where points exist twice.
+    /// </remarks>
     private Task OnScoreUpdatedAsync(PlayerScoreUpdated update, StreamSequenceToken? token)
     {
-        // TODO(Phase 5): for each absolute score, remove the stale entry from _ranked via _current,
-        // insert the new one, update _current, and set _dirty. Absolute scores make this idempotent
-        // under at-least-once delivery — a redelivered event simply re-states the truth.
-        _logger.LogDebug("Leaderboard ingest received {Count} score(s)", update.Scores.Length);
+        foreach (var score in update.Scores)
+        {
+            if (_current.TryGetValue(score.PlayerId, out var stale))
+            {
+                if (stale.Score == score.Score)
+                {
+                    // Same truth restated - nothing to re-rank, and nothing to broadcast.
+                    continue;
+                }
+
+                // The set is keyed by (score, playerId), so the entry must be removed at its *old*
+                // score before being reinserted at the new one. Holding every player, not just the
+                // top N, is what lets someone who gifted points away climb back in later.
+                _ranked.Remove(stale);
+            }
+
+            _current[score.PlayerId] = score;
+            _ranked.Add(score);
+            _dirty = true;
+        }
+
+        _logger.LogDebug("Leaderboard ingest applied {Count} score(s)", update.Scores.Length);
         return Task.CompletedTask;
     }
 
