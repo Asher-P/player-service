@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>PlayerService.E2E</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <!--
+    Deliberately no ProjectReference. This suite is a black-box HTTP client: it re-declares the
+    wire contract in Wire.cs instead of sharing the server's DTOs, so a breaking change to the
+    server's types shows up here as a failing test rather than as a silent recompile.
+  -->
+
+</Project>

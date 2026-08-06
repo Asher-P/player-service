@@ -8,6 +8,7 @@ using PlayerService.Abstractions.Grains;
 using PlayerService.Abstractions.Models;
 using PlayerService.Abstractions.Streaming;
 using PlayerService.Api.Configuration;
+using PlayerService.Api.Observability;
 
 namespace PlayerService.Api.Services;
 
@@ -24,6 +25,7 @@ public sealed class GiftService
     private readonly IClusterClient _client;
     private readonly IGrainFactory _grains;
     private readonly IOptionsMonitor<GiftOptions> _options;
+    private readonly PlayerServiceMetrics _metrics;
     private readonly ILogger<GiftService> _logger;
 
     public GiftService(
@@ -31,12 +33,14 @@ public sealed class GiftService
         IClusterClient client,
         IGrainFactory grains,
         IOptionsMonitor<GiftOptions> options,
+        PlayerServiceMetrics metrics,
         ILogger<GiftService> logger)
     {
         _transactions = transactions;
         _client = client;
         _grains = grains;
         _options = options;
+        _metrics = metrics;
         _logger = logger;
     }
 
@@ -58,6 +62,7 @@ public sealed class GiftService
     {
         if (string.Equals(senderId, recipientId, StringComparison.Ordinal))
         {
+            _metrics.GiftRejected(GiftRejection.SelfGift, attempts: 0);
             return new GiftOutcome(false, GiftRejection.SelfGift, 0, 0);
         }
 
@@ -67,6 +72,8 @@ public sealed class GiftService
 
         for (var attempt = 1; ; attempt++)
         {
+            _metrics.GiftAttempted();
+
             try
             {
                 GiftOutcome? outcome = null;
@@ -91,12 +98,14 @@ public sealed class GiftService
                     new PlayerScore(senderId, outcome!.SenderBalance),
                     new PlayerScore(recipientId, outcome.RecipientBalance));
 
+                _metrics.GiftApplied(attempt, replayed: false);
                 return outcome;
             }
             catch (Exception ex) when (Unwrap<GiftReplayException>(ex) is { } replay)
             {
                 // The duplicate aborted its own transaction, so it moved nothing; the caller gets
                 // exactly what the original attempt returned.
+                _metrics.GiftApplied(attempt, replayed: true);
                 return replay.Outcome with { Replayed = true };
             }
             catch (Exception ex) when (Unwrap<GiftRejectedException>(ex) is { } rejected)
@@ -107,14 +116,28 @@ public sealed class GiftService
                 // the rejection itself caused - see IPlayerGrain.RecordGiftRejectionAsync.
                 await sender.RecordGiftRejectionAsync(requestId, outcome);
 
-                _logger.LogInformation(
+                // Warning, not Information: a rejected gift is the caller being told no, and the
+                // alert log is filtered by level, so this is what puts the reason in it.
+                _logger.LogWarning(
                     "Gift {RequestId} from {Sender} to {Recipient} rejected: {Rejection}",
                     requestId, senderId, recipientId, rejected.Rejection);
 
+                _metrics.GiftRejected(rejected.Rejection, attempt);
                 return outcome;
             }
-            catch (OrleansTransactionAbortedException) when (attempt < options.MaxAttempts)
+            catch (OrleansTransactionAbortedException) when (attempt >= options.MaxAttempts)
             {
+                // The one path that becomes a 503. Counted separately from the aborts above,
+                // because "aborted and retried" is the design working and "aborted until the budget
+                // ran out" is the design being outrun.
+                _metrics.GiftAborted();
+                _metrics.GiftExhausted(attempt);
+                throw;
+            }
+            catch (OrleansTransactionAbortedException)
+            {
+                _metrics.GiftAborted();
+
                 // Contention, not failure: retrying is safe precisely because the operation is
                 // idempotent - if the aborted attempt had in fact committed, the retry finds the
                 // ledger entry and returns the original outcome.

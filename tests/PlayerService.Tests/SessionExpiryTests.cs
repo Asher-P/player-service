@@ -6,13 +6,13 @@ using Xunit;
 namespace PlayerService.Tests;
 
 /// <summary>
-/// Session liveness policy (plan §5.6): a 2-minute sliding TTL, evaluated lazily on read. Time is
+/// Session liveness policy (plan §5.6): a 3-minute sliding TTL, evaluated lazily on read. Time is
 /// advanced by hand rather than slept through, so these assertions are exact instead of hopeful.
 /// </summary>
 [Collection(ManualClockClusterCollection.Name)]
 public sealed class SessionExpiryTests
 {
-    private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(3);
 
     private readonly ManualClockClusterFixture _fixture;
 
@@ -31,8 +31,8 @@ public sealed class SessionExpiryTests
         var grant = await LoginAsync(NewId("device"), playerId);
         var player = Grains.GetGrain<IPlayerGrain>(playerId);
 
-        // Three quiet minutes in total, but never more than 90 seconds without a request.
-        for (var i = 0; i < 3; i++)
+        // Six quiet minutes in total, but never more than 90 seconds without a request.
+        for (var i = 0; i < 4; i++)
         {
             _fixture.Clock.Advance(TimeSpan.FromSeconds(90));
             Assert.True(await player.ValidateAndSlideSessionAsync(grant.Token));

@@ -1,0 +1,95 @@
+# Full observability stack: the service, Jaeger for traces, Prometheus for metrics, Grafana on top.
+#
+# Host ports are variables with defaults that avoid the standard ones, because a machine that
+# already runs a stray Jaeger or Prometheus is the common case and a port clash is an unhelpful
+# first experience. Override them in deploy/.env. Container-internal ports are always standard.
+#
+#   docker compose -f deploy/docker-compose.yml up --build
+
+name: player-service
+
+services:
+  player-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: player-service
+    ports:
+      - "${PLAYER_SERVICE_PORT:-5080}:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+
+      # Both signals go over OTLP/HTTP: Prometheus' OTLP receiver is HTTP-only, and Jaeger accepts
+      # either, so one protocol for both keeps the configuration honest.
+      Observability__Enabled: "true"
+      Observability__UseHttpProtobuf: "true"
+      Observability__TracesOtlpEndpoint: "http://jaeger:4318/v1/traces"
+      Observability__MetricsOtlpEndpoint: "http://prometheus:9090/api/v1/otlp/v1/metrics"
+
+      # Must stay <= the Grafana datasource's timeInterval, or $__rate_interval opens a window too
+      # narrow to hold two samples and every rate() panel goes blank. See datasources.yml.
+      Observability__MetricExportIntervalSeconds: "15"
+
+      # Orleans' own dashboard, served by this pod at /dashboard. Unauthenticated - fine on a local
+      # stack, not on a public listener. See ObservabilityOptions.DashboardEnabled.
+      Observability__DashboardEnabled: "true"
+    volumes:
+      # The alert log - warnings and errors only, one file per day - written inside the container
+      # at /app/Alert-Logs (the content root). Bound out so it survives the container and can be
+      # read without docker exec. See AlertLogOptions.
+      - ../Alert-Logs:/app/Alert-Logs
+    depends_on:
+      jaeger:
+        condition: service_started
+      prometheus:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    container_name: player-service-jaeger
+    ports:
+      - "${JAEGER_UI_PORT:-16687}:16686"        # UI
+      - "${JAEGER_OTLP_GRPC_PORT:-4327}:4317"   # OTLP gRPC
+      - "${JAEGER_OTLP_HTTP_PORT:-4328}:4318"   # OTLP HTTP
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    container_name: player-service-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # Lets the service push metrics straight here over OTLP. Without it Prometheus only scrapes,
+      # which would mean either an extra collector container or a second exporter in the app.
+      - --web.enable-otlp-receiver
+      - --storage.tsdb.retention.time=6h
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${PROMETHEUS_PORT:-9101}:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.1.2
+    container_name: player-service-grafana
+    environment:
+      # Local-only stack: anonymous admin beats making the reader hunt for credentials.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "${GRAFANA_PORT:-3501}:3000"
+    depends_on:
+      - prometheus
+      - jaeger
+    restart: unless-stopped

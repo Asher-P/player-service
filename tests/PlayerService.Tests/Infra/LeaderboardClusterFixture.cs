@@ -50,6 +50,7 @@ public sealed class LeaderboardClusterFixture : IAsyncLifetime
             first.GetRequiredService<IClusterClient>(),
             first.GetRequiredService<IGrainFactory>(),
             new StaticOptionsMonitor<GiftOptions>(new GiftOptions()),
+            TestMetrics.Create(),
             NullLogger<GiftService>.Instance);
 
         var pods = new List<LeaderboardCache>(SiloCount);

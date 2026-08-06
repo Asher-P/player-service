@@ -17,6 +17,11 @@ public static class OrleansHostExtensions
     /// <summary>Providers, transactions, streams and grain lifetime — everything except clustering.</summary>
     public static ISiloBuilder AddPlayerServiceOrleans(this ISiloBuilder silo)
     {
+        // Propagates the ambient Activity across grain calls, so one HTTP request's trace spans the
+        // silos it touched. Without it a gift shows up as three unrelated traces rather than one
+        // transaction, which is precisely the thing worth being able to see.
+        silo.AddActivityPropagation();
+
         silo.AddMemoryGrainStorage(PlayerServiceStorage.Default)          // prod: AddRedisGrainStorage
             .AddMemoryGrainStorage(PlayerServiceStorage.TransactionStore) // backs ITransactionalState
             .AddMemoryGrainStorage(PlayerServiceStorage.PubSubStore)      // required by stream pub-sub

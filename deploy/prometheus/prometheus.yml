@@ -1,0 +1,24 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+otlp:
+  # Normalise OTLP names to classic Prometheus form: playerservice.gift.attempts ->
+  # playerservice_gift_attempts_total, orleans-app-requests-latency -> orleans_app_requests_latency.
+  # Preserving the original names is possible (NoUTF8EscapingWithSuffixes), but then every selector
+  # containing a dot or dash has to be quoted - {"playerservice.gift.attempts_total"} - which breaks
+  # Grafana's autocomplete and makes every dashboard query harder to read for no benefit.
+  translation_strategy: UnderscoreEscapingWithSuffixes
+
+storage:
+  tsdb:
+    # OTLP is a push with its own batching, so samples can arrive slightly out of order after a
+    # restart or a slow export. Without a window, Prometheus rejects them outright.
+    out_of_order_time_window: 30m
+
+scrape_configs:
+  # Prometheus' own metrics. The service does not appear here: it pushes over OTLP rather than
+  # being scraped, so it has no scrape target.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

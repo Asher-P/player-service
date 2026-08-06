@@ -6,6 +6,7 @@ using PlayerService.Abstractions.Grains;
 using PlayerService.Abstractions.Models;
 using PlayerService.Api.Auth;
 using PlayerService.Api.Contracts;
+using PlayerService.Api.Observability;
 using PlayerService.Api.Services;
 
 namespace PlayerService.Api.Controllers;
@@ -20,11 +21,13 @@ public sealed class PlayersController : ControllerBase
 {
     private readonly IGrainFactory _grains;
     private readonly GiftService _gifts;
+    private readonly PlayerServiceMetrics _metrics;
 
-    public PlayersController(IGrainFactory grains, GiftService gifts)
+    public PlayersController(IGrainFactory grains, GiftService gifts, PlayerServiceMetrics metrics)
     {
         _grains = grains;
         _gifts = gifts;
+        _metrics = metrics;
     }
 
     [HttpGet("stats")]
@@ -61,6 +64,9 @@ public sealed class PlayersController : ControllerBase
             // retry-safe: the same requestId always yields the same response.
             var outcome = await _grains.GetGrain<IPlayerGrain>(playerId)
                 .AddPointsAsync(request.Points, request.RequestId);
+
+            // Replay rate is the cheapest available read on how chatty the clients actually are.
+            _metrics.ScoreApplied(outcome.Replayed);
             return Ok(ToResponse(outcome.Stats));
         }
         catch (OrleansTransactionAbortedException)

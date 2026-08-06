@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -6,6 +7,7 @@ using Orleans.Hosting;
 using Orleans.TestingHost;
 using PlayerService.Api.Configuration;
 using PlayerService.Api.Extensions;
+using PlayerService.Api.Observability;
 using PlayerService.Api.Services;
 using Xunit;
 
@@ -51,6 +53,7 @@ public sealed class ClusterFixture : IAsyncLifetime
             pod.GetRequiredService<IClusterClient>(),
             pod.GetRequiredService<IGrainFactory>(),
             new StaticOptionsMonitor<GiftOptions>(new GiftOptions()),
+            TestMetrics.Create(),
             NullLogger<GiftService>.Instance);
     }
 
@@ -79,4 +82,15 @@ public sealed class StaticOptionsMonitor<T> : IOptionsMonitor<T>
     public T Get(string? name) => CurrentValue;
 
     public IDisposable? OnChange(Action<T, string?> listener) => null;
+}
+
+/// <summary>
+/// Real instruments with no collector attached. Metrics are a production dependency of
+/// <see cref="GiftService"/>, so tests exercise the real type rather than a stub - recording to an
+/// unobserved meter costs nothing and keeps the instrumentation on the tested path.
+/// </summary>
+public static class TestMetrics
+{
+    public static PlayerServiceMetrics Create() =>
+        new(new ServiceCollection().AddMetrics().BuildServiceProvider().GetRequiredService<IMeterFactory>());
 }
