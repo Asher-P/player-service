@@ -27,6 +27,16 @@ public interface IPlayerGrain : IGrainWithStringKey
     Task<ScoreOutcome> AddPointsAsync(int points, string requestId);
 
     /// <summary>
+    /// Takes this player's transactional-state lock without reading or changing anything, so the
+    /// gift transaction can acquire its two locks in a fixed global order. Called on the recipient,
+    /// and only when the recipient sorts before the sender — the debit/credit pair already runs in
+    /// ascending key order otherwise. See <c>GiftService.SendGiftAsync</c> for why the order matters.
+    /// </summary>
+    [Transaction(TransactionOption.Join)]
+    [ResponseTimeout("00:00:05")]
+    Task EnlistForGiftAsync();
+
+    /// <summary>
     /// Sender side of a gift: idempotency check, then funds check and debit in one
     /// <c>PerformUpdate</c>. <c>Join</c> — it is only ever called inside the gift transaction the
     /// API layer opened. Returns the sender's post-debit balance.
