@@ -1,3 +1,4 @@
+using OpenTelemetry.Exporter;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -10,6 +11,11 @@ namespace PlayerService.Api.Extensions;
 /// Metrics and tracing, enough to answer the two questions this design raises in production:
 /// how long grain calls take, and how often gift transactions abort under contention.
 /// </summary>
+/// <remarks>
+/// There is no console exporter, by choice. Metric export runs on a timer, so a console exporter
+/// prints continuously whether or not anything happened, drowning the service's own logs. Telemetry
+/// goes to a collector or nowhere.
+/// </remarks>
 public static class ObservabilityExtensions
 {
     public static IServiceCollection AddPlayerServiceObservability(
@@ -32,8 +38,8 @@ public static class ObservabilityExtensions
 
         if (!options.Enabled)
         {
-            // Off by default in tests: an exporter writing to the console from a dozen in-process
-            // clusters is noise, and the metrics objects above still work without a collector.
+            // The metrics objects above still work without a provider - recording to an unobserved
+            // instrument is a no-op, so the instrumentation stays on the tested path.
             return services;
         }
 
@@ -48,7 +54,11 @@ public static class ObservabilityExtensions
                     .AddMeter(PlayerServiceMetrics.MeterName)
                     .AddAspNetCoreInstrumentation();
 
-                Export(metrics, options);
+                // Absent an endpoint, metrics are collected and left unexported rather than printed.
+                if (!string.IsNullOrWhiteSpace(options.MetricsOtlpEndpoint))
+                {
+                    metrics.AddOtlpExporter(otlp => Configure(otlp, options.MetricsOtlpEndpoint, options));
+                }
             })
             .WithTracing(tracing =>
             {
@@ -57,33 +67,20 @@ public static class ObservabilityExtensions
                     .AddSource("Microsoft.Orleans.Application")
                     .AddAspNetCoreInstrumentation();
 
-                Export(tracing, options);
+                if (!string.IsNullOrWhiteSpace(options.TracesOtlpEndpoint))
+                {
+                    tracing.AddOtlpExporter(otlp => Configure(otlp, options.TracesOtlpEndpoint, options));
+                }
             });
 
         return services;
     }
 
-    private static void Export(MeterProviderBuilder metrics, ObservabilityOptions options)
+    private static void Configure(OtlpExporterOptions otlp, string endpoint, ObservabilityOptions options)
     {
-        if (string.IsNullOrWhiteSpace(options.OtlpEndpoint))
-        {
-            metrics.AddConsoleExporter();
-        }
-        else
-        {
-            metrics.AddOtlpExporter(otlp => otlp.Endpoint = new Uri(options.OtlpEndpoint));
-        }
-    }
-
-    private static void Export(TracerProviderBuilder tracing, ObservabilityOptions options)
-    {
-        if (string.IsNullOrWhiteSpace(options.OtlpEndpoint))
-        {
-            tracing.AddConsoleExporter();
-        }
-        else
-        {
-            tracing.AddOtlpExporter(otlp => otlp.Endpoint = new Uri(options.OtlpEndpoint));
-        }
+        otlp.Endpoint = new Uri(endpoint);
+        otlp.Protocol = options.UseHttpProtobuf
+            ? OtlpExportProtocol.HttpProtobuf
+            : OtlpExportProtocol.Grpc;
     }
 }

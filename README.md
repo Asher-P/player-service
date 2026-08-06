@@ -163,9 +163,30 @@ indistinguishable from a local dictionary, and none of the guarantees above woul
 dotnet run --project src/PlayerService.Api
 ```
 
-Metrics and traces are on by default via the console exporter; set `Observability:OtlpEndpoint` to
-ship to a collector instead, or `Observability:Enabled: false` to turn export off (the instruments
-stay live either way).
+Traces go to **Jaeger** over OTLP gRPC at `http://localhost:4317` by default:
+
+```bash
+docker run -d --name jaeger -p 16686:16686 -p 4317:4317 -p 4318:4318 jaegertracing/all-in-one
+```
+
+Then browse [http://localhost:16686](http://localhost:16686) and pick the **player-service** service.
+
+**Nothing is ever exported to the console.** Metric export runs on a timer, so a console exporter
+prints continuously whether or not anything happened — it buried the service's own logs under
+~117k lines in a two-minute run. Telemetry goes to a collector or nowhere.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `Observability:Enabled` | `true` | Registers the OpenTelemetry providers at all |
+| `Observability:TracesOtlpEndpoint` | `http://localhost:4317` | Jaeger's OTLP receiver; empty disables trace export |
+| `Observability:MetricsOtlpEndpoint` | *(empty)* | A metrics backend; empty means collected but not shipped |
+| `Observability:UseHttpProtobuf` | `false` | Use OTLP over HTTP (port `4318`) instead of gRPC (`4317`) |
+
+Traces and metrics have **separate** endpoints on purpose. Jaeger stores traces, not metrics; sending
+metrics to it would produce a steady stream of failed-export errors rather than data. Point
+`MetricsOtlpEndpoint` at a Prometheus/OTLP metrics collector when there is one. Until then the
+instruments still record — recording to an unobserved instrument is a no-op, so the instrumentation
+stays on the tested path rather than rotting behind a flag.
 
 - **`Microsoft.Orleans` meter** — grain call latency (`orleans-app-requests-latency-*`), activation
   counts, and `orleans-transactions-started` / `-successful` / `-failed` / `-throttled`.
@@ -173,10 +194,10 @@ stay live either way).
   `gift.attempts_per_request` (a histogram whose tail is what predicts 503s), and `gift.outcomes` /
   `score.outcomes` tagged by result, so replay rate shows how chatty the clients really are.
 - **Tracing** — `silo.AddActivityPropagation()` carries the ambient `Activity` across grain calls,
-  so one HTTP request is one trace. A gift shows up as `POST players/{playerId}/gifts` with
-  `IPlayerGrain/DebitForGiftAsync`, `IPlayerGrain/CreditFromGiftAsync` and
-  `ITransactionManagerExtension/PrepareAndCommit` nested beneath it, rather than as four unrelated
-  traces.
+  so one HTTP request is one trace. A single gift trace in Jaeger contains the whole two-phase
+  commit: `POST players/{playerId}/gifts` over `ValidateAndSlideSessionAsync`,
+  `DebitForGiftAsync`, `CreditFromGiftAsync`, `CompleteGiftAsync`, and the transaction manager's
+  `Prepare` / `Prepared` / `PrepareAndCommit` / `Confirm` — rather than a dozen unrelated traces.
 
 Abort rate is the metric worth watching. An abort followed by a successful retry is invisible to the
 client and is **not** an error — it is the design working. What matters is the ratio: aborts climbing
