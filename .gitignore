@@ -6,3 +6,4 @@ obj/
 *.suo
 *.userosscache
 *.sln.docstates
+Alert-Logs/

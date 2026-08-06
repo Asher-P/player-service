@@ -28,8 +28,13 @@ public sealed class SessionAuthFilter : IAsyncAuthorizationFilter
     public const string PlayerIdItem = "playerId";
 
     private readonly IGrainFactory _grains;
+    private readonly ILogger<SessionAuthFilter> _logger;
 
-    public SessionAuthFilter(IGrainFactory grains) => _grains = grains;
+    public SessionAuthFilter(IGrainFactory grains, ILogger<SessionAuthFilter> logger)
+    {
+        _grains = grains;
+        _logger = logger;
+    }
 
     public async Task OnAuthorizationAsync(AuthorizationFilterContext context)
     {
@@ -42,6 +47,13 @@ public sealed class SessionAuthFilter : IAsyncAuthorizationFilter
 
         if (!SessionToken.TryGetPlayerId(token, out var playerId))
         {
+            // Logged with the reason rather than left to the request log's bare 401: a malformed
+            // token is a client that never had one, and an expired token is a client that did.
+            // Which of the two is happening decides whether anyone needs to act.
+            _logger.LogWarning(
+                "Rejected {Method} {Path}: missing or malformed session token",
+                context.HttpContext.Request.Method, context.HttpContext.Request.Path);
+
             context.Result = Unauthorized("Missing or malformed session token.");
             return;
         }
@@ -49,6 +61,10 @@ public sealed class SessionAuthFilter : IAsyncAuthorizationFilter
         var valid = await _grains.GetGrain<IPlayerGrain>(playerId).ValidateAndSlideSessionAsync(token);
         if (!valid)
         {
+            _logger.LogWarning(
+                "Rejected {Method} {Path} for player {PlayerId}: session token expired, superseded or unknown",
+                context.HttpContext.Request.Method, context.HttpContext.Request.Path, playerId);
+
             context.Result = Unauthorized("Session token is expired, superseded or unknown.");
             return;
         }

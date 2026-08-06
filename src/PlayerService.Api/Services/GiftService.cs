@@ -116,7 +116,9 @@ public sealed class GiftService
                 // the rejection itself caused - see IPlayerGrain.RecordGiftRejectionAsync.
                 await sender.RecordGiftRejectionAsync(requestId, outcome);
 
-                _logger.LogInformation(
+                // Warning, not Information: a rejected gift is the caller being told no, and the
+                // alert log is filtered by level, so this is what puts the reason in it.
+                _logger.LogWarning(
                     "Gift {RequestId} from {Sender} to {Recipient} rejected: {Rejection}",
                     requestId, senderId, recipientId, rejected.Rejection);
 

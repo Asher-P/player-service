@@ -5,6 +5,10 @@ using PlayerService.Api.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// First, so that anything logged during the rest of startup - a silo that fails to come up, an
+// options validation error - is already going to the console and the alert file.
+builder.AddAlertLogging();
+
 var observability = builder.Configuration
     .GetSection(ObservabilityOptions.SectionName)
     .Get<ObservabilityOptions>() ?? new ObservabilityOptions();
@@ -36,6 +40,11 @@ builder.Services
 var app = builder.Build();
 
 app.UseExceptionHandler();
+
+// After the exception handler, so a request that blew up is recorded with the 500 the handler
+// returned rather than as an unfinished request.
+app.UseAlertRequestLogging();
+
 app.MapControllers();
 
 // A minimal-API endpoint rather than a controller action, so the session filter - which is

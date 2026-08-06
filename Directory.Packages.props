@@ -13,6 +13,9 @@
     <PackageVersion Include="Microsoft.Orleans.TestingHost" Version="$(OrleansVersion)" />
   </ItemGroup>
   <ItemGroup Label="Observability">
+    <!-- Pulls in the Console and File sinks, the request-logging middleware and
+         Serilog.Settings.Configuration - everything AlertLogOptions needs, in one reference. -->
+    <PackageVersion Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="$(OpenTelemetryVersion)" />
     <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="$(OpenTelemetryVersion)" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="$(OpenTelemetryVersion)" />
