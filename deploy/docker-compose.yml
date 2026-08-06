@@ -25,6 +25,10 @@ services:
       Observability__UseHttpProtobuf: "true"
       Observability__TracesOtlpEndpoint: "http://jaeger:4318/v1/traces"
       Observability__MetricsOtlpEndpoint: "http://prometheus:9090/api/v1/otlp/v1/metrics"
+
+      # Orleans' own dashboard, served by this pod at /dashboard. Unauthenticated - fine on a local
+      # stack, not on a public listener. See ObservabilityOptions.DashboardEnabled.
+      Observability__DashboardEnabled: "true"
     depends_on:
       jaeger:
         condition: service_started

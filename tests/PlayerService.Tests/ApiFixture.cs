@@ -53,6 +53,10 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
             // Exporters would write to the test runner's console on a timer; the instruments
             // themselves stay live, so the metrics code is still on the tested path.
             ["Observability:Enabled"] = "false",
+
+            // Nothing here asserts on the dashboard, and its per-grain counter sampling is pure
+            // overhead in a suite that starts a host per collection.
+            ["Observability:DashboardEnabled"] = "false",
         }));
 
         builder.ConfigureServices(services => services.Configure<EndpointOptions>(options =>

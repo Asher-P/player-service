@@ -36,4 +36,19 @@ public sealed class ObservabilityOptions
     /// match the protocol, so these two settings move together.
     /// </summary>
     public bool UseHttpProtobuf { get; set; }
+
+    /// <summary>
+    /// Serves the Orleans Dashboard at <see cref="DashboardPath"/>.
+    /// </summary>
+    /// <remarks>
+    /// Opt-in, and deliberately so. The dashboard exposes cluster internals - grain types, live
+    /// activation counts, per-method call rates and a live log stream - and it is mapped as a
+    /// minimal-API endpoint, so the MVC session filter does not apply to it. That is fine behind a
+    /// private network or an ingress that authenticates, and not fine on a public listener. Where
+    /// real authentication exists, prefer <c>.RequireAuthorization()</c> on the mapped endpoint.
+    /// </remarks>
+    public bool DashboardEnabled { get; set; }
+
+    /// <summary>Route prefix the dashboard is served from.</summary>
+    public string DashboardPath { get; set; } = "/dashboard";
 }

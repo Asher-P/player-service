@@ -174,6 +174,7 @@ docker compose -f deploy/docker-compose.yml up --build
 | | URL | Notes |
 | --- | --- | --- |
 | API | http://localhost:5080 | `/health` is the one unauthenticated route |
+| **Orleans Dashboard** | http://localhost:5080/dashboard | Served by the pod itself — the cluster's own view |
 | Grafana | http://localhost:3501 | Anonymous admin; the **Player Service** dashboard is pre-provisioned |
 | Jaeger | http://localhost:16687 | Pick the `player-service` service |
 | Prometheus | http://localhost:9101 | |
@@ -219,6 +220,17 @@ stays on the tested path rather than rotting behind a flag.
 - **`PlayerService` meter** — the things Orleans cannot see: `gift.attempts` vs `gift.aborts`,
   `gift.attempts_per_request` (a histogram whose tail is what predicts 503s), and `gift.outcomes` /
   `score.outcomes` tagged by result, so replay rate shows how chatty the clients really are.
+- **Orleans Dashboard** (`Microsoft.Orleans.Dashboard`, first-party, version-matched to the runtime)
+  — served by the pod itself at `/dashboard`. It answers the questions Prometheus is the wrong shape
+  for: which grain *types* are activated right now, and call rate / latency / exception count broken
+  down **per grain method** (`PlayerGrain.AddPointsAsync` distinct from `PlayerGrain.DebitForGiftAsync`),
+  plus a live log stream. Enabled by `Observability:DashboardEnabled`, and off in tests.
+
+  It is **unauthenticated** and mapped as a minimal-API endpoint, so the MVC session filter does not
+  cover it — it exposes grain types, activation counts and logs to anyone who can reach the port.
+  Fine behind a private network or an authenticating ingress; not fine on a public listener. Where
+  real authentication exists, add `.RequireAuthorization()` to the mapped endpoint.
+
 - **Tracing** — `silo.AddActivityPropagation()` carries the ambient `Activity` across grain calls,
   so one HTTP request is one trace. A single gift trace in Jaeger contains the whole two-phase
   commit: `POST players/{playerId}/gifts` over `ValidateAndSlideSessionAsync`,
