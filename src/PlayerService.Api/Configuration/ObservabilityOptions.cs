@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace PlayerService.Api.Configuration;
 
 /// <summary>
@@ -17,7 +19,7 @@ public sealed class ObservabilityOptions
 
     /// <summary>
     /// OTLP endpoint for <b>traces</b> — a Jaeger instance's OTLP receiver
-    /// (<c>http://localhost:4317</c> gRPC, or <c>http://localhost:4318</c> with
+    /// (<c>http://localhost:4327</c> gRPC, or <c>http://localhost:4328</c> with
     /// <see cref="UseHttpProtobuf"/>). Empty disables trace export.
     /// </summary>
     public string? TracesOtlpEndpoint { get; set; }
@@ -32,10 +34,28 @@ public sealed class ObservabilityOptions
     public string? MetricsOtlpEndpoint { get; set; }
 
     /// <summary>
-    /// Send OTLP over HTTP/protobuf (port 4318) instead of gRPC (port 4317). The endpoint port must
+    /// Send OTLP over HTTP/protobuf (port 4328) instead of gRPC (port 4327). The endpoint port must
     /// match the protocol, so these two settings move together.
     /// </summary>
     public bool UseHttpProtobuf { get; set; }
+
+    /// <summary>
+    /// How often metrics are pushed to <see cref="MetricsOtlpEndpoint"/>. This is the sample spacing
+    /// the backend sees, so it is really a dashboard setting wearing an exporter's clothes.
+    /// </summary>
+    /// <remarks>
+    /// The SDK default is 60s, which quietly breaks every <c>rate()</c> panel: Grafana's
+    /// <c>$__rate_interval</c> is <c>max($__interval + scrape_interval, 4 * scrape_interval)</c>,
+    /// which at the provisioned <c>timeInterval: 15s</c> bottoms out at 60s — a 60s window over
+    /// 60s-spaced samples usually contains one point, and <c>rate()</c> needs two. It renders as
+    /// "No data" rather than an error, which is why it is worth pinning here.
+    /// <para>
+    /// Keep this at or below the Grafana datasource's <c>timeInterval</c>
+    /// (<c>deploy/grafana/provisioning/datasources/datasources.yml</c>); the two move together.
+    /// </para>
+    /// </remarks>
+    [Range(1, 300)]
+    public int MetricExportIntervalSeconds { get; set; } = 15;
 
     /// <summary>
     /// Serves the Orleans Dashboard at <see cref="DashboardPath"/>.

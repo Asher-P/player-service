@@ -26,9 +26,18 @@ services:
       Observability__TracesOtlpEndpoint: "http://jaeger:4318/v1/traces"
       Observability__MetricsOtlpEndpoint: "http://prometheus:9090/api/v1/otlp/v1/metrics"
 
+      # Must stay <= the Grafana datasource's timeInterval, or $__rate_interval opens a window too
+      # narrow to hold two samples and every rate() panel goes blank. See datasources.yml.
+      Observability__MetricExportIntervalSeconds: "15"
+
       # Orleans' own dashboard, served by this pod at /dashboard. Unauthenticated - fine on a local
       # stack, not on a public listener. See ObservabilityOptions.DashboardEnabled.
       Observability__DashboardEnabled: "true"
+    volumes:
+      # The alert log - warnings and errors only, one file per day - written inside the container
+      # at /app/Alert-Logs (the content root). Bound out so it survives the container and can be
+      # read without docker exec. See AlertLogOptions.
+      - ../Alert-Logs:/app/Alert-Logs
     depends_on:
       jaeger:
         condition: service_started

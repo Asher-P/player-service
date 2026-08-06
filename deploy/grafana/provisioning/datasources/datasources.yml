@@ -8,6 +8,11 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     jsonData:
+      # This is what $__rate_interval is built from - max($__interval + timeInterval,
+      # 4 * timeInterval) - so it has to match how often the service actually pushes, not how often
+      # Prometheus scrapes (it scrapes nothing here). Kept in step with
+      # Observability:MetricExportIntervalSeconds; if that changes, change this too, or every rate()
+      # panel silently reads "No data" for want of a second sample in the window.
       timeInterval: 15s
       # Turns exemplars on a latency histogram into a link straight to the trace that produced the
       # slow request - the reason both datasources are provisioned together rather than separately.

@@ -4,7 +4,7 @@
   "tags": ["orleans", "player-service"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 4,
   "refresh": "10s",
   "time": { "from": "now-15m", "to": "now" },
   "templating": { "list": [] },
@@ -145,9 +145,52 @@
       ]
     },
     {
+      "type": "timeseries",
+      "title": "Gift rejections by reason",
+      "description": "The four terminal refusals, which the outcomes panel next to it cannot show: stacked against 'applied' they are a rounding error, and the interesting question is whether one reason is climbing on its own. SelfGift and UnknownRecipient are client bugs (400/404) and should sit at zero in production traffic; Offline and InsufficientFunds are legitimate game state (409) and are expected to be non-zero. 'exhausted' is deliberately absent - it is a retry-budget failure, not a refusal, and it belongs to the abort panels.\n\nThe running total since the process started, deliberately NOT rate() or increase(). Rejections are rare enough that a counter's series does not exist until the first one happens, and both rate() and increase() need two samples to produce a number - so the very first rejection of each reason reports as zero and is invisible forever. Plotting the raw counter cannot lie that way: a step from nothing to 1 is one rejection. The staircase resets when the service restarts, which is information rather than noise.\n\nLegend shows the current total per reason. An empty panel means no rejections have ever been recorded by the live process.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 17 },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 20, "showPoints": "auto", "pointSize": 6, "stacking": { "mode": "none" } }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Offline" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "InsufficientFunds" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "SelfGift" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "UnknownRecipient" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "purple" } }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (playerservice_gift_outcomes_total{result=~\"Offline|InsufficientFunds|SelfGift|UnknownRecipient\"})",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Orleans cluster",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
       "collapsed": false,
       "panels": []
     },
@@ -156,7 +199,7 @@
       "title": "Orleans transactions",
       "description": "started / successful / failed / throttled, straight from the Microsoft.Orleans meter.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
       "fieldConfig": {
         "defaults": {
           "unit": "reqps",
@@ -176,7 +219,7 @@
       "title": "Grain call latency (mean, ms)",
       "description": "orleans_app_requests_latency, the runtime's own view of how long grain calls take.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
@@ -197,7 +240,7 @@
       "title": "Grain activations",
       "description": "Live activations, and the rate at which they are created and collected. A player's activation and its idempotency ledger leave memory together once idle past CollectionAge.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 34 },
       "fieldConfig": {
         "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" } },
         "overrides": []
@@ -211,7 +254,7 @@
     {
       "type": "row",
       "title": "HTTP surface",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 42 },
       "collapsed": false,
       "panels": []
     },
@@ -220,7 +263,7 @@
       "title": "Requests by route and status",
       "description": "The status-code map as traffic. 409s are state conflicts, 503s are exhausted retries.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 43 },
       "fieldConfig": {
         "defaults": {
           "unit": "reqps",
@@ -240,7 +283,7 @@
       "type": "timeseries",
       "title": "HTTP latency p95 by route",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
       "fieldConfig": {
         "defaults": {
           "unit": "s",

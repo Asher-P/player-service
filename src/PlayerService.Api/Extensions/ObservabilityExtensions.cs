@@ -57,7 +57,16 @@ public static class ObservabilityExtensions
                 // Absent an endpoint, metrics are collected and left unexported rather than printed.
                 if (!string.IsNullOrWhiteSpace(options.MetricsOtlpEndpoint))
                 {
-                    metrics.AddOtlpExporter(otlp => Configure(otlp, options.MetricsOtlpEndpoint, options));
+                    metrics.AddOtlpExporter((otlp, reader) =>
+                    {
+                        Configure(otlp, options.MetricsOtlpEndpoint, options);
+
+                        // Export cadence is the sample spacing Prometheus stores, and therefore what
+                        // decides whether rate() has two points to work with. See
+                        // ObservabilityOptions.MetricExportIntervalSeconds.
+                        reader.PeriodicExportingMetricReaderOptions.ExportIntervalMilliseconds =
+                            options.MetricExportIntervalSeconds * 1000;
+                    });
                 }
             })
             .WithTracing(tracing =>
