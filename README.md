@@ -5,12 +5,13 @@ puzzle-game backend: sessions, scores, gifting and a leaderboard, with no databa
 
 Implementation plan: [docs/plan/player-service-plan.md](docs/plan/player-service-plan.md).
 
-> **Status: complete.** Sessions (one per device, supersede across devices, sliding 2-minute TTL),
+> **Status: complete.** Sessions (one per device, supersede across devices, sliding 3-minute TTL),
 > atomic and idempotent score updates, gifting as a distributed transaction (points conserved,
 > balances never negative, `p1↔p2` in a tight loop does not deadlock, replays return the original
 > outcome byte-for-byte), a push leaderboard whose ingest is a single cluster-wide writer and whose
 > reads are wait-free pod-local snapshots converging across pods, **39 tests** on a two-silo cluster
-> plus an HTTP-level harness, and OpenTelemetry metrics and tracing.
+> plus an HTTP-level harness, a **15-test black-box end-to-end suite** that re-establishes every
+> concurrency guarantee against a running service over HTTP, and OpenTelemetry metrics and tracing.
 
 ---
 
@@ -28,6 +29,14 @@ dotnet test
 ```
 
 Runs the suite against a real **two-silo** `InProcessTestCluster`.
+
+```bash
+dotnet test tests/PlayerService.E2ETests
+```
+
+Runs the end-to-end suite against the service started above, on `http://localhost:5080`, over
+plain HTTP with no shared types — see [End-to-end suite](#end-to-end-suite-against-a-running-service).
+It skips itself if nothing is listening.
 
 ### Smoke test
 
@@ -103,7 +112,7 @@ would cost every gift a second transactional participant.
 | 3 | Atomic + idempotent score updates | **Done** - transactional apply, ledger check/write/prune, publishes `PlayerScoreUpdated` |
 | 4 | Gifting via Orleans transactions | **Done** - API-layer transaction, debit + credit + ledger write, bounded retry on abort |
 | 5 | Leaderboard ingest + push cache | **Done** - stream ingest applies absolute scores to `Dictionary` + `SortedSet`, broadcasts Top-N on change, pods converge |
-| 6 | Concurrency harness, observability, README | **Done** - 39 tests incl. HTTP-level harness, OpenTelemetry metrics + tracing, this README |
+| 6 | Concurrency harness, observability, README | **Done** - 39 tests incl. HTTP-level harness, 15 end-to-end tests against a live service, OpenTelemetry metrics + tracing, this README |
 
 ---
 
@@ -114,6 +123,7 @@ src/PlayerService.Abstractions   grain interfaces, wire models, events, stream i
 src/PlayerService.Grains         PlayerGrain, DeviceGrain, LeaderboardGrain + internals
 src/PlayerService.Api            controllers, DI/silo composition, auth filter, cache, gift service
 tests/PlayerService.Tests        xUnit: two-silo InProcessTestCluster + WebApplicationFactory
+tests/PlayerService.E2ETests     xUnit: black-box HTTP suite against a service you started
 deploy/                          docker-compose stack: Jaeger, Prometheus, Grafana + provisioning
 Dockerfile                       multi-stage; builds on SDK 10, runs on the real .NET 8 runtime
 ```
@@ -126,8 +136,10 @@ Dockerfile                       multi-stage; builds on SDK 10, runs on the real
 dotnet test
 ```
 
-39 tests, no `Thread.Sleep`-based timing anywhere: time is either advanced by hand through an
-injected `TimeProvider` or polled to a deadline.
+39 in-process tests plus 15 end-to-end tests, with no `Thread.Sleep`-based timing anywhere: time is
+either advanced by hand through an injected `TimeProvider`, or polled to a deadline. The end-to-end
+suite needs a service to be running and skips itself when there is not one, so `dotnet test` on the
+whole solution is green either way.
 
 | Suite | Cluster | What it establishes |
 | --- | --- | --- |
@@ -138,37 +150,89 @@ injected `TimeProvider` or polled to a deadline.
 | `GiftTests` | 2-silo | Conservation, no negative balance, `p1↔p2` terminates, replay-after-offline, offline/overdraw rejected |
 | `LeaderboardTests` | 2-silo, cache per silo | Ingest correctness, gift moves both players, **both pods converge** |
 | `ApiContractTests` | `WebApplicationFactory` | The status-code map over real HTTP: 200/400/401/403/404/409 |
+| `E2E.ScoreConcurrencyTests` | **live service** | 50 posts in parallel land on 50 distinct balances; the same `requestId` ×100 applies once |
+| `E2E.GiftConcurrencyTests` | **live service** | Conservation and counters over 60 parallel gifts, `p1↔p2` tight loop, overdraw race, duplicate `requestId` race |
+| `E2E.SessionTests` | **live service** | Duplicate `deviceId` rejected (sequentially and under a 16-way race), supersede, cross-player `403` |
+| `E2E.LeaderboardTests` | **live service** | Ranks dense and ordered, and the board converges on what `/stats` reports after a mixed burst |
+| `E2E.OfflineGiftTests` | **live service**, lapsed sessions | Replay after the recipient went offline, offline rejection moves nothing, rejections replay as rejections |
 
 Two silos everywhere is deliberate. On one silo, "single activation cluster-wide" is
 indistinguishable from a local dictionary, and none of the guarantees above would be under test.
 
 ### Concurrency scenarios from the brief
 
-| Scenario | Test |
-| --- | --- |
-| N concurrent score adds on one player, nothing lost | `N_parallel_score_posts_sum_exactly` |
-| Same `requestId` ×100 simultaneously, applied once | `Duplicate_requestId_fired_in_parallel_applies_once` |
-| Duplicate `deviceId` login in parallel, one wins | `Concurrent_logins_on_one_device_grant_exactly_one_session` |
-| Points conserved under concurrent random-pair gifts | `Many_concurrent_gifts_across_random_pairs_conserve_points` |
-| `p_1→p_2` and `p_2→p_1` in a tight loop, no deadlock | `Gifts_in_both_directions_between_one_pair_do_not_deadlock` |
-| Balance never negative under concurrent overdraw | `Two_simultaneous_gifts_that_together_overdraw_let_only_one_through` |
-| Gift to offline player rejected, no points moved | `A_gift_to_an_offline_player_is_rejected_and_moves_no_points` |
-| Replay after recipient went offline returns original | `A_gift_replayed_after_the_recipient_went_offline_still_returns_the_original` |
-| Leaderboard correct after a concurrent burst | `The_board_converges_on_the_true_scores_after_a_burst` |
-| Both pods agree on the same Top-N | `Both_pods_converge_on_the_same_snapshot` |
+Every scenario is asserted twice: once in-process against the cluster, where the failure mode is
+readable, and once end-to-end against a running service over HTTP, where the client's own view is
+the only thing being trusted.
+
+| Scenario | In-process test | End-to-end test |
+| --- | --- | --- |
+| N concurrent score adds on one player, nothing lost | `N_parallel_score_posts_sum_exactly` | `N_parallel_score_posts_add_up_exactly` |
+| Same `requestId` ×100 simultaneously, applied once | `Duplicate_requestId_fired_in_parallel_applies_once` | `The_same_requestId_fired_100_times_in_parallel_is_applied_once` |
+| Duplicate `deviceId` login in parallel, one wins | `Concurrent_logins_on_one_device_grant_exactly_one_session` | `A_duplicate_deviceId_login_is_rejected`, `Simultaneous_logins_on_one_device_yield_exactly_one_token` |
+| Points conserved under concurrent random-pair gifts | `Many_concurrent_gifts_across_random_pairs_conserve_points` | `Many_parallel_gifts_across_random_pairs_conserve_points_and_never_go_negative` |
+| `p_1→p_2` and `p_2→p_1` in a tight loop, no deadlock | `Gifts_in_both_directions_between_one_pair_do_not_deadlock` | `p1_and_p2_gifting_each_other_in_a_tight_loop_do_not_deadlock` |
+| Balance never negative under concurrent overdraw | `Two_simultaneous_gifts_that_together_overdraw_let_only_one_through` | `Two_simultaneous_gifts_that_together_overdraw_let_exactly_one_through` |
+| Gift to offline player rejected, no points moved | `A_gift_to_an_offline_player_is_rejected_and_moves_no_points` | `A_gift_to_an_offline_player_is_rejected_and_moves_no_points` |
+| Replay after recipient went offline returns original | `A_gift_replayed_after_the_recipient_went_offline_still_returns_the_original` | `A_replayed_gift_after_the_recipient_went_offline_returns_the_original_result` |
+| Leaderboard correct after a concurrent burst | `The_board_converges_on_the_true_scores_after_a_burst` | `The_leaderboard_is_correct_after_a_burst_of_concurrent_scores_and_gifts` |
+| Both pods agree on the same Top-N | `Both_pods_converge_on_the_same_snapshot` | — (needs two pods; the local service is one) |
+
+### End-to-end suite against a running service
+
+`tests/PlayerService.E2ETests` is the same list of guarantees asserted the way a game client would
+find out about them: over HTTP, against a process nobody in the test owns.
+
+```bash
+dotnet run --project src/PlayerService.Api      # in one terminal
+dotnet test tests/PlayerService.E2ETests        # in another
+```
+
+15 tests, ~3 minutes. It has **no `ProjectReference`** — the wire contract is re-declared in
+`Wire.cs`, so a server-side rename fails a test here instead of silently recompiling. Two knobs,
+both environment variables:
+
+| Variable | Default | Why |
+| --- | --- | --- |
+| `PLAYERSERVICE_E2E_BASEURL` | `http://localhost:5080` | Point the suite at a deployed pod instead |
+| `PLAYERSERVICE_E2E_SESSION_TTL` | `00:03:00` | Must match the service's `Sessions:Ttl` (see below) |
+
+Three details are worth stating, because they are what makes the results mean anything:
+
+- **A burst is a burst.** Every "N in parallel" test builds all N tasks first and releases them
+  through one gate, over a connection pool that was warmed beforehand — otherwise "100 in parallel"
+  degrades into 100 in a fast loop, staggered by TCP handshakes, and proves nothing. The N-parallel
+  score test additionally asserts that the N responses form N *distinct* balances: a lost update
+  shows up as a repeated rung on the ladder, which a sum check alone can miss when two errors cancel.
+- **Offline costs a TTL, and the suite pays it once.** There is no logout endpoint by design, so the
+  only honest route to "offline" over HTTP is to stop touching a session and let it lapse. Both
+  offline scenarios share a single wait in `OfflineRecipientFixture`, which logs in two recipients
+  together and detects the transition by probing with 1-point gifts until the answer flips from
+  `200` to `409 Recipient offline` — no fixed sleep, and the probes keep the activations warm so the
+  rejection under test is *offline* and not *collected* (which is the `404` discussed above). Set
+  `Sessions:Ttl` to its 1-minute floor and tell the suite via `PLAYERSERVICE_E2E_SESSION_TTL` to
+  cut the run to a third. The other collection runs in parallel with the wait, so the suite costs about one
+  TTL in total rather than one TTL plus everything else.
+- **A red suite means the service is wrong.** If nothing is listening, every test reports as
+  *skipped*, not failed, so `dotnet test` across the solution stays honest on a machine where only
+  the in-process suites can run.
 
 ---
 
 ## Observability
 
-```bash
-dotnet run --project src/PlayerService.Api
-```
-
 The whole stack — service, Jaeger, Prometheus, Grafana — comes up with one command:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up --build
+```
+
+To iterate on the service itself, bring up only the backends and run it from the host; the
+`Development` settings already point at the host ports below, so traces and metrics land in the same
+place either way:
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d jaeger prometheus grafana
 ```
 
 | | URL | Notes |
@@ -192,10 +256,15 @@ needed just to bridge push to pull, at the cost of requiring Prometheus v3. Metr
 normalised to classic form (`playerservice.gift.aborts` → `playerservice_gift_aborts_total`);
 preserving the original names is possible but forces every selector containing a dot to be quoted.
 
-Running the stack standalone against your own Jaeger instead:
+Against your own Jaeger on the conventional ports instead — override the endpoints, since the
+`Development` defaults assume the shifted ones:
 
 ```bash
 docker run -d --name jaeger -p 16686:16686 -p 4317:4317 -p 4318:4318 jaegertracing/jaeger:2.11.0
+```
+
+```bash
+Observability__TracesOtlpEndpoint=http://localhost:4318/v1/traces dotnet run --project src/PlayerService.Api
 ```
 
 **Nothing is ever exported to the console.** Metric export runs on a timer, so a console exporter
@@ -205,9 +274,27 @@ prints continuously whether or not anything happened — it buried the service's
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `Observability:Enabled` | `true` | Registers the OpenTelemetry providers at all |
-| `Observability:TracesOtlpEndpoint` | `http://localhost:4317` | Jaeger's OTLP receiver; empty disables trace export |
+| `Observability:TracesOtlpEndpoint` | *(empty)* | Jaeger's OTLP receiver; empty disables trace export |
 | `Observability:MetricsOtlpEndpoint` | *(empty)* | A metrics backend; empty means collected but not shipped |
 | `Observability:UseHttpProtobuf` | `false` | Use OTLP over HTTP (port `4318`) instead of gRPC (`4317`) |
+| `Observability:MetricExportIntervalSeconds` | `15` | Metric push cadence; must stay ≤ the Grafana datasource's `timeInterval` |
+
+Both endpoints are empty in the base settings on purpose: an endpoint nobody is listening on is worse
+than none, because the exporter's failures surface on an EventSource rather than in the log, so the
+service looks healthy while shipping nothing. The two environments that *do* have a collector fill
+them in — [`appsettings.Development.json`](src/PlayerService.Api/appsettings.Development.json) with
+the host ports the compose stack publishes, and [`docker-compose.yml`](deploy/docker-compose.yml)
+with the container names.
+
+`MetricExportIntervalSeconds` looks like an exporter detail and is really a dashboard setting. The
+OpenTelemetry default is 60s, and the service pushes rather than being scraped, so that cadence *is*
+the sample spacing Prometheus stores. Grafana derives `$__rate_interval` as
+`max($__interval + timeInterval, 4 * timeInterval)`, which at the provisioned `timeInterval: 15s`
+bottoms out at 60s — and a 60s window over 60s-spaced samples usually holds one point, while `rate()`
+needs two. The panels render "No data" rather than an error, which is a slow way to find out. Pushing
+every 15s puts four samples in the narrowest window Grafana will ask for. If either number changes,
+change the other:
+[`datasources.yml`](deploy/grafana/provisioning/datasources/datasources.yml).
 
 Traces and metrics have **separate** endpoints on purpose. Jaeger stores traces, not metrics; sending
 metrics to it would produce a steady stream of failed-export errors rather than data. Point
@@ -241,6 +328,49 @@ Abort rate is the metric worth watching. An abort followed by a successful retry
 client and is **not** an error — it is the design working. What matters is the ratio: aborts climbing
 against attempts means the retry budget is approaching exhaustion, and that is a configuration
 decision (`Gifting:MaxAttempts`, `RetryBaseDelay`), not a code change.
+
+### Alert log
+
+Everything the service logs goes to the console, as before. A **second sink takes only `Warning` and
+above** and writes it to a dated file, so a day of trouble reads without scrolling past a day of
+success:
+
+```
+src/PlayerService.Api/Alert-Logs/alerts-20260806.log
+```
+
+Two mechanisms fill it, and they are deliberately different. The sink is filtered by **level**, so
+any component logging at `Warning` or above lands there for free — including code written later. And
+[`UseAlertRequestLogging`](src/PlayerService.Api/Extensions/AlertLoggingExtensions.cs) adds one event
+per request whose level comes from the **response status**: `4xx` is a rejection and logs `Warning`,
+`5xx` or an escaped exception logs `Error`, everything else stays at `Information` and never reaches
+the file. A request can therefore be recorded as rejected even where the code that rejected it says
+nothing:
+
+```
+2026-08-06 18:58:28.892 +03:00 [WRN] PlayerService.Api.Auth.SessionAuthFilter Rejected GET /players/p1/stats: missing or malformed session token {...}
+2026-08-06 18:58:28.929 +03:00 [WRN] Serilog.AspNetCore.RequestLoggingMiddleware HTTP GET /players/p1/stats responded 401 in 59.1054 ms {"TraceId":"98f1f705b079dfb8bcf5dd637d4e138f",...}
+```
+
+Where a rejection has a *reason* the status code cannot carry, it is logged at the site: a malformed
+token and an expired one are both `401`, and which of the two is happening is what decides whether
+anyone needs to act. Gift rejections log their `GiftRejection` the same way. Request lines carry the
+`TraceId` Jaeger indexes on, so an alert leads straight to the span that produced it.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `AlertLog:Enabled` | `true` | Attaches the file sink at all; the console is unaffected |
+| `AlertLog:Directory` | `Alert-Logs` | Relative paths resolve against the content root |
+| `AlertLog:MinimumLevel` | `Warning` | The cut-off for "this is an alert" |
+| `AlertLog:RetainedFileCountLimit` | `30` | One file per day, so a 30-day window |
+
+Serilog's rolling file sink appends the date before the extension, which is why the files are
+`alerts-20260806.log` rather than `2026-08-06.log`: a literal date in the path would have to be
+computed at startup and would then never roll over at midnight in a long-running service. Level
+minimums for the rest of the pipeline live in the `Serilog` section of
+[`appsettings.json`](src/PlayerService.Api/appsettings.json), replacing the old `Logging` section,
+which Serilog does not read. The compose stack binds the container's `/app/Alert-Logs` to
+`Alert-Logs/` at the repo root, so the file outlives the container.
 
 Worth seeing concretely. Firing 50 simultaneous gifts at a **single pair** of players through the
 containerised service produced **258 attempts for 54 gifts — a 79% abort rate** — and every gift
@@ -469,9 +599,9 @@ same broadcast.
   immediately. Rationale: it preserves "one online session per player", which is what keeps the gift
   online-check a single unambiguous read. Rejecting instead would be defensible; supersede was
   chosen for UX and a cleaner predicate.
-- **Sliding TTL of 2 minutes.** Any authenticated request slides the expiry. A device idle for one
+- **Sliding TTL of 3 minutes.** Any authenticated request slides the expiry. A device idle for one
   minute keeps its session (TTL > 60 s, as required); a crashed device stops sliding and lapses
-  after 2 minutes rather than being locked out forever.
+  after 3 minutes rather than being locked out forever.
 - **Expiry is lazy** — evaluated on read, never swept. A timer per player is the same anti-pattern
   the idempotency ledger avoids. `CollectionAge` reclaims the memory of anything genuinely idle.
 - **Token format `{playerId}.{guid}`.** The auth filter parses the prefix locally and makes exactly
