@@ -23,6 +23,11 @@ var app = builder.Build();
 app.UseExceptionHandler();
 app.MapControllers();
 
+// A minimal-API endpoint rather than a controller action, so the session filter - which is
+// registered on MVC only - does not apply. Container orchestration needs one unauthenticated
+// endpoint to gate startup on, and every other route requires a token by design.
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+
 app.Run();
 
 /// <summary>Exposed so integration tests can use <c>WebApplicationFactory&lt;Program&gt;</c>.</summary>

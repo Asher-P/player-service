@@ -1,0 +1,260 @@
+{
+  "uid": "player-service",
+  "title": "Player Service",
+  "tags": ["orleans", "player-service"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Gifting - the contended path",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Gift attempts vs aborts",
+      "description": "An abort followed by a successful retry is the design working, not an error. What matters is the ratio: aborts climbing towards attempts means the retry budget is close to exhaustion, and the next step is a config change (Gifting:MaxAttempts, RetryBaseDelay), not a code change.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "aborts" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(playerservice_gift_attempts_total[$__rate_interval]))",
+          "legendFormat": "attempts"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(playerservice_gift_aborts_total[$__rate_interval])) or vector(0)",
+          "legendFormat": "aborts"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gift outcomes by result",
+      "description": "applied / replayed / Offline / InsufficientFunds / SelfGift / UnknownRecipient / exhausted. 'exhausted' is the only one that becomes a 503.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(playerservice_gift_outcomes_total[$__rate_interval]))",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Attempts per gift (p50 / p95 / max)",
+      "description": "The tail is what predicts 503s. p95 drifting towards Gifting:MaxAttempts means contention is outrunning the retry budget.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(playerservice_gift_attempts_per_request_bucket[$__rate_interval])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(playerservice_gift_attempts_per_request_bucket[$__rate_interval])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Abort rate",
+      "description": "Aborts as a share of attempts over the dashboard window.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 0.3 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(rate(playerservice_gift_aborts_total[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(playerservice_gift_attempts_total[$__rate_interval])), 0.0001)",
+          "legendFormat": "abort rate"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Score replay rate",
+      "description": "Share of score posts that were duplicates. This is the cheapest read on how chatty the clients actually are.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 9 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1 },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(rate(playerservice_score_outcomes_total{result=\"replayed\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(playerservice_score_outcomes_total[$__rate_interval])), 0.0001)",
+          "legendFormat": "replay rate"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Orleans cluster",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Orleans transactions",
+      "description": "started / successful / failed / throttled, straight from the Microsoft.Orleans meter.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(orleans_transactions_started_total[$__rate_interval]))", "legendFormat": "started" },
+        { "refId": "B", "expr": "sum(rate(orleans_transactions_successful_total[$__rate_interval]))", "legendFormat": "successful" },
+        { "refId": "C", "expr": "sum(rate(orleans_transactions_failed_total[$__rate_interval]))", "legendFormat": "failed" },
+        { "refId": "D", "expr": "sum(rate(orleans_transactions_throttled_total[$__rate_interval]))", "legendFormat": "throttled" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Grain call latency (mean, ms)",
+      "description": "orleans_app_requests_latency, the runtime's own view of how long grain calls take.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(orleans_app_requests_latency_sum_total[$__rate_interval])) / clamp_min(sum(rate(orleans_app_requests_latency_count_total[$__rate_interval])), 0.0001)",
+          "legendFormat": "mean grain call"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Grain activations",
+      "description": "Live activations, and the rate at which they are created and collected. A player's activation and its idempotency ledger leave memory together once idle past CollectionAge.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "fieldConfig": {
+        "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(orleans_catalog_activations)", "legendFormat": "live activations" },
+        { "refId": "B", "expr": "sum(rate(orleans_catalog_activation_created_total[$__rate_interval]))", "legendFormat": "created/s" },
+        { "refId": "C", "expr": "sum(rate(orleans_catalog_activation_destroyed_total[$__rate_interval]))", "legendFormat": "destroyed/s" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "HTTP surface",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests by route and status",
+      "description": "The status-code map as traffic. 409s are state conflicts, 503s are exhausted retries.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (http_route, http_response_status_code) (rate(http_server_request_duration_seconds_count[$__rate_interval]))",
+          "legendFormat": "{{http_route}} {{http_response_status_code}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP latency p95 by route",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{http_route}}"
+        }
+      ]
+    }
+  ]
+}
