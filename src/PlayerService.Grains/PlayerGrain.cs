@@ -122,6 +122,14 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
     }
 
     /// <summary>
+    /// A write, not a read: the credit that follows needs an exclusive lock, and entering as a
+    /// reader first would turn the credit into a lock <i>upgrade</i> — which Orleans answers with
+    /// <c>OrleansTransactionLockUpgradeException</c> the moment another transaction shares the read
+    /// lock. Mutating nothing costs nothing here, because a gift writes this state either way.
+    /// </summary>
+    public Task EnlistForGiftAsync() => _balance.PerformUpdate(_ => { });
+
+    /// <summary>
     /// Funds check and debit are the <b>same statement</b> inside one <c>PerformUpdate</c>, so two
     /// concurrent 100-point gifts from a 100-point balance cannot both pass: serializable isolation
     /// means the second either sees the first's committed effect or conflicts and aborts. That is

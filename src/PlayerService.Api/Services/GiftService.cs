@@ -16,9 +16,18 @@ namespace PlayerService.Api.Services;
 /// Orchestrates gifting from the <b>API layer</b>, which is what makes the call graph a tree —
 /// <c>GiftService → sender</c> and <c>GiftService → recipient</c>, never sender → recipient.
 /// With no cycle in the call graph, <c>p1→p2</c> and <c>p2→p1</c> firing simultaneously cannot
-/// deadlock at the activation level; they can only conflict at the transactional-state layer,
-/// which Orleans resolves by aborting one, never by blocking both.
+/// deadlock at the activation level.
 /// </summary>
+/// <remarks>
+/// That covers the activation layer only. Transactional-state locks are a second, independent
+/// layer, and a tree-shaped call graph says nothing about it: what matters there is the order in
+/// which each transaction takes its locks. Orleans resolves a lock cycle by expiring the lock
+/// group's deadline (<c>TransactionalStateOptions.LockTimeout</c>) and aborting the group — it has
+/// no deadlock detector — so a cycle is never a hang, but it always costs the full timeout before
+/// the retry loop below can clean it up. Hence <see cref="SendGiftAsync"/> takes both locks in one
+/// global order, which makes the cycle unformable and the timeout a safety net rather than the hot
+/// path.
+/// </remarks>
 public sealed class GiftService
 {
     private readonly ITransactionClient _transactions;
@@ -70,6 +79,15 @@ public sealed class GiftService
         var sender = _grains.GetGrain<IPlayerGrain>(senderId);
         var recipient = _grains.GetGrain<IPlayerGrain>(recipientId);
 
+        // Both locks are taken in ascending grain key, so no two gifts can ever hold each other's
+        // next lock. The self-gift above already ruled out the equal case.
+        //
+        // The *calls* still run sender-first, because the debit is what detects a replay or an
+        // insufficient balance, and letting the credit go first would allow an offline recipient to
+        // pre-empt a replay that owes the caller the original outcome. So when the recipient sorts
+        // first, its lock is taken by an enlist that changes nothing and the sequence is unchanged.
+        var recipientLocksFirst = string.CompareOrdinal(recipientId, senderId) < 0;
+
         for (var attempt = 1; ; attempt++)
         {
             _metrics.GiftAttempted();
@@ -80,8 +98,13 @@ public sealed class GiftService
 
                 await _transactions.RunTransaction(TransactionOption.Create, async () =>
                 {
+                    if (recipientLocksFirst)
+                    {
+                        await recipient.EnlistForGiftAsync();
+                    }
+
                     // Sender first: a replay or an insufficient balance is then caught before the
-                    // recipient is touched at all.
+                    // recipient's balance is touched at all.
                     var senderBalance = await sender.DebitForGiftAsync(recipientId, points, requestId);
                     var recipientBalance = await recipient.CreditFromGiftAsync(senderId, points);
 
