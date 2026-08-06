@@ -19,6 +19,14 @@ public sealed class PlayerServiceMetrics
     /// <summary>Meter name, so a collector can subscribe to it by name alongside Microsoft.Orleans.</summary>
     public const string MeterName = "PlayerService";
 
+    /// <summary>
+    /// Named rather than inlined because the histogram is useless without the matching bucket
+    /// boundaries configured against this exact name — see <c>ObservabilityExtensions</c>. A typo in
+    /// one of the two would not fail anything; it would silently restore the default buckets, and
+    /// the quantiles would go back to reporting constants.
+    /// </summary>
+    public const string AttemptsPerRequestInstrument = "playerservice.gift.attempts_per_request";
+
     private readonly Counter<long> _giftAttempts;
     private readonly Counter<long> _giftAborts;
     private readonly Counter<long> _giftOutcomes;
@@ -50,7 +58,7 @@ public sealed class PlayerServiceMetrics
             description: "Score updates, tagged by whether they were a replay.");
 
         _giftAttemptsPerRequest = meter.CreateHistogram<int>(
-            "playerservice.gift.attempts_per_request",
+            AttemptsPerRequestInstrument,
             unit: "{attempt}",
             description: "Attempts a gift needed before reaching a terminal outcome. The distribution's tail is what predicts 503s.");
     }

@@ -54,6 +54,25 @@ public static class ObservabilityExtensions
                     .AddMeter(PlayerServiceMetrics.MeterName)
                     .AddAspNetCoreInstrumentation();
 
+                // Attempts per gift is a small integer (1..GiftOptions.MaxAttempts), not a latency,
+                // and the SDK's default boundaries are milliseconds: 0, 5, 10, 25, ... Every value
+                // therefore lands in the (0, 5] bucket, leaving histogram_quantile nothing but that
+                // bucket's own width to interpolate across - which pins p50 at 2.5 and p95 at 4.75
+                // whatever the traffic actually did.
+                //
+                // Half-integers, not integers: histogram_quantile always interpolates *within* the
+                // matched bucket, so a value sitting on a boundary reads back as a fraction of it -
+                // boundaries at 1, 2, 3 turn an all-single-attempt workload into p50 0.5, which is
+                // the same class of lie in a new costume. Centering attempt k in (k-0.5, k+0.5]
+                // makes the median land on k exactly. The upper quantiles still carry up to half an
+                // attempt of interpolation error, which is inherent to the bucket format.
+                metrics.AddView(
+                    PlayerServiceMetrics.AttemptsPerRequestInstrument,
+                    new ExplicitBucketHistogramConfiguration
+                    {
+                        Boundaries = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5],
+                    });
+
                 // Absent an endpoint, metrics are collected and left unexported rather than printed.
                 if (!string.IsNullOrWhiteSpace(options.MetricsOtlpEndpoint))
                 {
