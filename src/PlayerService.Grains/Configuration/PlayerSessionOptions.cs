@@ -13,5 +13,5 @@ public sealed class PlayerSessionOptions
     /// device keeps its session.
     /// </summary>
     [Range(typeof(TimeSpan), "00:01:00", "01:00:00")]
-    public TimeSpan Ttl { get; set; } = TimeSpan.FromMinutes(2);
+    public TimeSpan Ttl { get; set; } = TimeSpan.FromMinutes(3);
 }
