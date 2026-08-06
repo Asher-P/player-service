@@ -80,7 +80,19 @@ Two deviations from the plan's §5.7 table, both deliberate:
 
 ---
 
-## Two findings from Phase 4 worth stating plainly
+## Three findings worth stating plainly
+
+**A tree-shaped call graph prevents activation deadlock, not lock-order inversion.** Orchestrating
+gifts from the API layer means sender never calls recipient, so `p1↔p2` cannot deadlock at the
+activation level — that part held. But transactional-state locks are a separate wait-for graph, and
+`sender` then `recipient` is a per-request order, so reciprocal gifts still formed a cycle one layer
+down. Orleans has no deadlock detector; it resolves such a cycle only by expiring the lock group's
+deadline. The system therefore never hung, stayed correct, and passed its concurrency tests — while
+quietly paying `LockTimeout` on every cycle. A Jaeger trace priced it: 2044 ms of lock wait, then a
+retry that committed in 0.3 ms. Both locks are now taken in ascending grain key
+([GiftService.cs](src/PlayerService.Api/Services/GiftService.cs)), which took max gift latency from
+~2080 ms to 115 ms and aborts under a gift burst from 72 to 0. **"Never blocks forever" and "does not
+deadlock" are different claims, and only the first one was tested.**
 
 **Orleans' default lock timeouts silently defeat the retry design.** The gift methods carry
 `[ResponseTimeout("00:00:05")]` per the plan, but Orleans resolves transactional lock contention at
@@ -92,6 +104,18 @@ below the response timeout (2 s / 1 s) in
 [OrleansHostExtensions.cs](src/PlayerService.Api/Extensions/OrleansHostExtensions.cs), and the retry
 budget is sized to actually de-conflict a hot pair (8 attempts, 100 ms exponential + full jitter).
 The same burst now passes in a fraction of the time. Fail fast, back off properly, retry more.
+
+**A histogram with the wrong buckets reports constants, and looks like data.** `attempts_per_request`
+is a small integer (1..8), but the OTel SDK's default boundaries are milliseconds — `0, 5, 10, 25, …`
+— so every observation landed in `(0, 5]` and `histogram_quantile` had nothing but that one bucket's
+width to interpolate across. It reported p50 2.5 and p95 4.75 **regardless of the actual
+distribution**, including when every gift took exactly one attempt. The dashboard read as "gifts
+need 4-5 attempts" while the counters said 1.00. Fixed with an explicit-bucket view in
+[ObservabilityExtensions.cs](src/PlayerService.Api/Extensions/ObservabilityExtensions.cs), using
+*half*-integer boundaries: `histogram_quantile` interpolates within the matched bucket, so integer
+boundaries merely move the artifact (p50 becomes 0.5), while centering attempt *k* in
+`(k-0.5, k+0.5]` puts the median on *k* exactly. A flat quantile line is a bucketing smell, not a
+stable system.
 
 **`UnknownRecipient` is activation-local, and that is a real limitation.** "Never logged in" is
 detected by the recipient grain having no bound session, and sessions are plain activation state by
@@ -418,14 +442,14 @@ Two consequences worth naming:
   `await` in between.** Transactional state is protected by transaction isolation instead, which is
   a stronger guarantee and does not depend on turn boundaries.
 
-## Why there is no lock ordering, and what replaced it
+## Lock ordering: not needed at the activation layer, required at the state layer
 
 Lock ordering exists to break cycles in a *wait-for* graph. It is only necessary if something is
-held while something else is acquired. This design has no such thing, for two independent reasons.
+held while something else is acquired. This design has two layers, and the answer differs by layer —
+getting that wrong cost us a 2-second p99, described at the end of this section.
 
-**There is no lock to order.** Per-player mutual exclusion is the runtime's activation queue, not a
-`lock` we took. There is no ordinal comparison of player IDs anywhere in the codebase, and searching
-for one is how you confirm it.
+**At the activation layer there is no lock to order.** Per-player mutual exclusion is the runtime's
+activation queue, not a `lock` we took.
 
 **The call graph is a tree, so no cycle exists to break.** Gifting could have been
 `senderGrain.SendGift()` calling `recipientGrain.Credit()`. That is a genuine cycle: `p_1→p_2` and
@@ -442,17 +466,55 @@ GiftService ──▶ sender    (debit)
 Sender never calls recipient. With no edge between them, there is no cycle, and activation-level
 deadlock is not merely avoided but unrepresentable.
 
-**Contention resolves by abort, not by blocking.** Two transactions touching the same pair in
-opposite order conflict at the transactional-state layer. Orleans aborts one; it never blocks both.
-`GiftService` retries with exponential, fully-jittered backoff, which is safe *precisely because the
-operation is idempotent* — if the aborted attempt had in fact committed, the retry finds the ledger
-entry and returns the original outcome. `Gifts_in_both_directions_between_one_pair_do_not_deadlock`
-runs both directions concurrently and every request terminates.
+**The transactional-state layer is a second, independent wait-for graph, and the tree says nothing
+about it.** What matters there is not who calls whom but the order in which each transaction takes
+its locks — and `sender` then `recipient` is a *per-request* order, so `p1→p2` and `p2→p1` in flight
+together still form a cycle, just one layer down. Orleans breaks it by letting the lock group's
+deadline expire (`TransactionalStateOptions.LockTimeout`) and aborting the group; it has **no
+deadlock detector**, no wait-for graph, and no priority rule that applies on first acquisition.
+So a cycle is never a hang — but it always costs the full timeout.
 
-One thing this cost us, and it is worth stating: Orleans' **default** lock timeouts (8 s / 10 s)
-exceed the gift methods' 5 s `[ResponseTimeout]`, so contention surfaced as a call timeout rather
-than a clean abort, and burned the whole retry budget. Both are now configured below the response
-timeout. Removing lock ordering does not remove the need to think about timeouts — it relocates it.
+That is exactly what it did. A Jaeger trace of a single gift showed 2044 ms inside
+`CreditFromGiftAsync`, ending in `OrleansCascadingAbortException` from `ReadWriteLock.EnterLock`,
+followed by a retry that committed in 0.3 ms. The work was never slow; the wait was the whole cost,
+and one lock break aborts its entire group at once — which is why the slow requests arrive as a
+block of near-identical ~2050 ms latencies rather than a spread.
+
+**So both locks are now taken in one global order: ascending grain key.** With a total order over
+participants no two gifts can hold each other's next lock, and the cycle becomes unformable. The
+calls still run sender-first, because the debit is what detects a replay or an insufficient balance
+and letting the credit go first would allow an offline recipient to pre-empt a replay that owes the
+caller its original outcome. When the recipient sorts first, its lock is taken up front by
+`EnlistForGiftAsync` — a `PerformUpdate` that changes nothing, and costs nothing, because a gift
+writes that state anyway. It is a write rather than a read so the credit that follows is not a lock
+*upgrade*, which Orleans answers with `OrleansTransactionLockUpgradeException` under sharing.
+
+Measured through the live API. The two runs are separate service instances under comparable
+gift-burst load rather than a controlled A/B, so read the magnitudes, not the third digit:
+
+| | before (257 gifts) | after (175 gifts) |
+| --- | --- | --- |
+| gift latency p95 | — | 31 ms |
+| gift latency max | ~2080 ms | **115 ms** |
+| requests over 1 s | dozens | **0** |
+| attempts per gift | 329 / 257 = 1.28 | 175 / 175 = **1.00** |
+| `gift.aborts` | 72 | **0** |
+
+The abort count is the cleanest signal: 72 → 0. Every gift now commits on its first attempt.
+
+**Contention still resolves by abort, and that path is still load-bearing.** Ordering removes the
+cycle, not the contention: two transactions wanting the same player still conflict, Orleans still
+aborts one, and `GiftService` still retries with exponential, fully-jittered backoff — safe
+*precisely because the operation is idempotent*. If the aborted attempt had in fact committed, the
+retry finds the ledger entry and returns the original outcome.
+
+Two things this cost us, both worth stating. Orleans' **default** lock timeouts (8 s / 10 s) exceed
+the gift methods' 5 s `[ResponseTimeout]`, so contention surfaced as a call timeout rather than a
+clean abort and burned the whole retry budget; both are now configured below the response timeout,
+and with ordering in place they are a backstop rather than the hot path. And the ordering itself is
+a real invariant now: **player IDs are compared ordinally in `GiftService.SendGiftAsync`**, so any
+future operation that touches two players must take their locks in the same ascending order or it
+reintroduces the cycle.
 
 ## Idempotency: two simultaneous duplicates, and how records stay bounded
 
@@ -619,8 +681,9 @@ removing the attribute and watching
 
 ## Assumptions
 
-- **Player and device IDs are opaque strings.** No ordering assumption is needed anywhere, since
-  nothing is lock-ordered.
+- **Player and device IDs are opaque strings.** Nothing reads structure out of them. Gifting does
+  compare two player IDs *ordinally*, but only to pick a consistent lock order — any total order
+  over the ID space would do, so this assumes comparability, never a format.
 - **A session token is a bearer credential, not real auth.** Per the brief. It authenticates exactly
   one player, and that player may act only on their own resources (hence the `403`).
 - **Clients retry within seconds**, so a 10-minute idempotency TTL vastly exceeds the replay window.
@@ -641,7 +704,8 @@ removing the attribute and watching
 For a genuinely single-process service, the in-memory design with a `ConcurrentDictionary` and
 per-player locks would have been cheaper and equally correct. Orleans is substantially more
 machinery. What it buys is that the concurrency guarantees are **inherited from the runtime rather
-than hand-written** — no lock ordering to get right, no atomic-check-then-act to argue about — and
+than hand-written** — no atomic-check-then-act to argue about, and lock ordering reduced to one
+comparison at the point the transaction opens rather than a discipline every call site must keep — and
 that the same design survives horizontal scale-out, which the locking version does not: a double
 lock cannot span two silos, so gifting would have had to be redesigned rather than rehosted.
 
