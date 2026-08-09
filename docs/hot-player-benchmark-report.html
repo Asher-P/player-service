@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>דוח בנצ'מארק — שחקן חם · PlayerService</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+
+  :root {
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --accent: #2a78d6;
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --good: #0ca30c;
+    --warn: #fab219;
+    --crit: #d03b3b;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --accent: #3987e5;
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      color-scheme: dark;
+    }
+  }
+
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    line-height: 1.6;
+    margin: 0;
+  }
+  .wrap {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+  code, .mono {
+    font-family: ui-monospace, Consolas, "Courier New", monospace;
+    font-size: 0.92em;
+  }
+
+  /* ---------- header ---------- */
+  header.report { margin-bottom: 40px; }
+  .eyebrow {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    margin: 0 0 6px;
+  }
+  h1 {
+    font-size: clamp(26px, 4vw, 36px);
+    font-weight: 700;
+    line-height: 1.2;
+    margin: 0 0 14px;
+    text-wrap: balance;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .chip {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--ink-2);
+    font-size: 12.5px;
+    padding: 3px 12px;
+    white-space: nowrap;
+  }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 44px; }
+  section > h2 {
+    border-top: 1px solid var(--grid);
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0 0 12px;
+    padding-top: 22px;
+  }
+  section > h2 .tag {
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+    margin-inline-start: 10px;
+  }
+  p { margin: 0 0 12px; max-width: 72ch; }
+  p.lede { color: var(--ink-2); }
+
+  /* ---------- stat tiles ---------- */
+  .tiles {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(4, 1fr);
+    margin: 18px 0 6px;
+  }
+  @media (max-width: 720px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px 14px;
+  }
+  .tile .value {
+    direction: ltr;
+    font-size: 27px;
+    font-weight: 700;
+    line-height: 1.15;
+    text-align: right;
+  }
+  .tile .value small { color: var(--muted); font-size: 15px; font-weight: 600; }
+  .tile .label {
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.45;
+    margin-top: 6px;
+  }
+  .tile.ok .value { color: var(--good); }
+
+  /* ---------- tables ---------- */
+  .scroll { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin: 14px 0 4px;
+    min-width: 640px;
+    width: 100%;
+  }
+  th, td {
+    border-bottom: 1px solid var(--grid);
+    padding: 8px 12px;
+    text-align: right;
+    vertical-align: top;
+  }
+  th {
+    color: var(--ink-2);
+    font-size: 12.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  td.num, th.num {
+    direction: ltr;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+  }
+  td.name { font-weight: 600; white-space: nowrap; }
+  tr.over td { color: var(--crit); }
+  .footnote { color: var(--muted); font-size: 12.5px; margin-top: 8px; max-width: 78ch; }
+
+  /* ---------- charts ---------- */
+  figure.chart {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin: 18px 0 8px;
+    padding: 18px 18px 10px;
+  }
+  figure.chart figcaption {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  figure.chart .sub { color: var(--muted); font-size: 12.5px; font-weight: 400; margin-bottom: 10px; }
+  .plot { direction: ltr; overflow-x: auto; }
+  .plot svg { display: block; min-width: 620px; width: 100%; }
+  .legend {
+    color: var(--ink-2);
+    direction: ltr;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 12.5px;
+    margin: 2px 2px 10px;
+  }
+  .legend .key { align-items: center; display: flex; gap: 7px; }
+  .legend .sw { border-radius: 3px; display: inline-block; height: 11px; width: 11px; }
+
+  svg text { font-family: "Segoe UI", system-ui, sans-serif; }
+  .t-axis { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .t-val  { fill: var(--ink-2); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .t-onbar { fill: #ffffff; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .t-ondark { fill: #1a1a19; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .t-name { fill: var(--ink-2); font-size: 12px; }
+  .t-series { font-size: 11.5px; font-weight: 700; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .baseline { stroke: var(--axis); stroke-width: 1; }
+  .threshold { stroke: var(--ink-2); stroke-dasharray: 5 4; stroke-width: 1.4; }
+
+  [data-tip] { cursor: default; }
+  #tip {
+    background: var(--ink);
+    border-radius: 6px;
+    color: var(--page);
+    direction: ltr;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    max-width: 260px;
+    padding: 6px 10px;
+    pointer-events: none;
+    position: absolute;
+    z-index: 10;
+  }
+
+  ul.tight { margin: 8px 0 0; padding-inline-start: 20px; }
+  ul.tight li { margin-bottom: 8px; max-width: 74ch; }
+  ul.tight li strong { font-weight: 600; }
+
+  footer.report {
+    border-top: 1px solid var(--grid);
+    color: var(--muted);
+    font-size: 12.5px;
+    margin-top: 52px;
+    padding-top: 18px;
+  }
+  footer.report code { font-size: 12px; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- print ---------- */
+  @media print {
+    :root {
+      --page: #ffffff;
+      --surface: #ffffff;
+      --ink: #0b0b0b;
+      --ink-2: #52514e;
+      --grid: #d5d4cd;
+      --border: rgba(11, 11, 11, 0.18);
+      color-scheme: light;
+    }
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .wrap { max-width: none; padding: 0; }
+    figure.chart, .tile { break-inside: avoid; }
+    section { break-inside: avoid-page; }
+    #tip { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="report">
+  <p class="eyebrow">PlayerService · Orleans co-hosted silo · .NET 8</p>
+  <h1>דוח בנצ'מארק — שחקן חם תחת עומס כתיבה</h1>
+  <div class="meta">
+    <span class="chip">9 באוגוסט 2026</span>
+    <span class="chip">localhost, לקוח ושרת על אותה מכונה</span>
+    <span class="chip">Windows 11</span>
+    <span class="chip">Storage בזיכרון (לא Redis)</span>
+    <span class="chip">לקוח: עד 512 חיבורים במקביל</span>
+  </div>
+</header>
+
+<section id="summary">
+  <h2>תקציר</h2>
+  <p class="lede">
+    נמדד המסלול החם ביותר במערכת: <code>POST /players/{id}/stats/score</code> על שחקן יחיד —
+    כלומר כל הבקשות מתנקזות ל־activation אחד של <code>PlayerGrain</code>, וכל בקשה היא
+    טרנזקציית Orleans מלאה. שלוש מדידות: פרץ של 10,000 בקשות, מדרגות פרץ למציאת תקציב־השנייה,
+    וקצב מתמשך למציאת נקודת הרוויה.
+  </p>
+  <div class="tiles">
+    <div class="tile">
+      <div class="value">‎~490/s</div>
+      <div class="label">תקרת הטרנזקציות של grain יחיד — זהה ב־Debug וב־Release</div>
+    </div>
+    <div class="tile">
+      <div class="value">‎~2.05<small> ms</small></div>
+      <div class="label">עלות טרנזקציה בודדת (2PC + נעילות + כתיבת state)</div>
+    </div>
+    <div class="tile">
+      <div class="value">‎~450–500/s</div>
+      <div class="label">העומס המרבי שעדיין נענה בתוך שנייה אחת</div>
+    </div>
+    <div class="tile ok">
+      <div class="value">0</div>
+      <div class="label">בקשות שאבדו או הוכפלו, מתוך 37,744 בקשות שנמדדו</div>
+    </div>
+  </div>
+  <p>
+    השורה התחתונה: התקרה נקבעת על־ידי <strong>פרוטוקול הטרנזקציות</strong>, לא על־ידי איכות הקוד או
+    ה־JIT. מעבר לתקרה המערכת לא קורסת — היא שופכת עומס נקי (503 עם חוזה retry אידמפוטנטי),
+    והחשבונאות נשארת מדויקת עד הנקודה האחרונה.
+  </p>
+</section>
+
+<section id="env">
+  <h2>סביבת המדידה</h2>
+  <ul class="tight">
+    <li><strong>שירות:</strong> build של Release‏, silo יחיד עם clustering מקומי, storage וסטרימים בזיכרון. בפריסה אמיתית (Redis / Event Hubs) עלות הכתיבה תעלה — המספרים כאן הם תקרה אופטימית.</li>
+    <li><strong>לקוח:</strong> חבילת ה־E2E‏ (<code>xUnit</code>), עד 512 חיבורי HTTP במקביל, sockets מחוממים לפני כל מדידה. הלקוח והשרת חולקים מכונה אחת — ה־latency כולל גם המתנה בתור בצד הלקוח מעבר ל־512.</li>
+    <li><strong>עומס:</strong> כל בקשה עם <code>requestId</code> ייחודי; ולידציה שכל תשובה היא 200 או 503 בלבד, ושסך המאזן תואם בדיוק את מספר ה־200.</li>
+  </ul>
+</section>
+
+<section id="test1">
+  <h2>מדידה 1 — פרץ של 10,000 בקשות <span class="tag">HotPlayerBurstTests</span></h2>
+  <p>
+    10,000 בקשות נורות יחד על שחקן אחד, דרך שער שחרור משותף. שלוש ריצות: Debug‏, Release קר
+    (JIT באמצע העומס) ו־Release חם. אחרי הפרץ — כל בקשה שנדחתה ב־503 נשלחת שוב עם אותו
+    <code>requestId</code> עד הצלחה, והמאזן הסופי חייב לצאת 10,000 נקודות בדיוק.
+  </p>
+
+  <figure class="chart">
+    <figcaption>תוצאת 10,000 הבקשות בכל ריצה</figcaption>
+    <div class="sub">כל בקשה נענתה: או הוחלה (200) או נדחתה נקי עם חוזה retry ‏(503). אף תשובה אחרת, אף בקשה תלויה.</div>
+    <div class="legend">
+      <span class="key"><span class="sw" style="background:var(--good)"></span>הוחלו (200 OK)</span>
+      <span class="key"><span class="sw" style="background:var(--warn)"></span>נדחו (503, נדרש retry)</span>
+    </div>
+    <div class="plot">
+      <svg viewBox="0 0 760 188" role="img" aria-label="פירוק 10,000 הבקשות להוחלו ונדחו, בשלוש ריצות">
+        <line class="gridline" x1="275" y1="12" x2="275" y2="152"></line>
+        <line class="gridline" x1="430" y1="12" x2="430" y2="152"></line>
+        <line class="gridline" x1="585" y1="12" x2="585" y2="152"></line>
+        <line class="gridline" x1="740" y1="12" x2="740" y2="152"></line>
+
+        <!-- Debug -->
+        <text class="t-name" x="112" y="36" text-anchor="end">Debug</text>
+        <rect x="120" y="18" width="421" height="28" rx="4" fill="var(--good)" data-tip="Debug — applied: 6,791 (68%)"></rect>
+        <rect x="543" y="18" width="197" height="28" rx="4" fill="var(--warn)" data-tip="Debug — shed 503: 3,209 (32%)"></rect>
+        <text class="t-onbar" x="130" y="37">6,791</text>
+        <text class="t-ondark" x="553" y="37">3,209</text>
+
+        <!-- Release cold -->
+        <text class="t-name" x="112" y="80" text-anchor="end">Release קר</text>
+        <rect x="120" y="62" width="577" height="28" rx="4" fill="var(--good)" data-tip="Release cold — applied: 9,304 (93%)"></rect>
+        <rect x="699" y="62" width="41" height="28" rx="4" fill="var(--warn)" data-tip="Release cold — shed 503: 696 (7%)"></rect>
+        <text class="t-onbar" x="130" y="81">9,304</text>
+        <text class="t-val" x="694" y="58" text-anchor="end">696</text>
+
+        <!-- Release warm -->
+        <text class="t-name" x="112" y="124" text-anchor="end">Release חם</text>
+        <rect x="120" y="106" width="620" height="28" rx="4" fill="var(--good)" data-tip="Release warm — applied: 10,000 (100%)"></rect>
+        <text class="t-onbar" x="130" y="125">10,000</text>
+
+        <line class="baseline" x1="120" y1="152" x2="740" y2="152"></line>
+        <text class="t-axis" x="120" y="170" text-anchor="middle">0</text>
+        <text class="t-axis" x="275" y="170" text-anchor="middle">2,500</text>
+        <text class="t-axis" x="430" y="170" text-anchor="middle">5,000</text>
+        <text class="t-axis" x="585" y="170" text-anchor="middle">7,500</text>
+        <text class="t-axis" x="740" y="170" text-anchor="middle">10,000</text>
+      </svg>
+    </div>
+  </figure>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>ריצה</th>
+          <th class="num">משך</th>
+          <th class="num">קצב אישור</th>
+          <th class="num">הוחלו</th>
+          <th class="num">503</th>
+          <th class="num">p50</th>
+          <th class="num">p95</th>
+          <th class="num">p99</th>
+          <th class="num">max</th>
+          <th class="num">השלמת retry</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="name">Debug</td>
+          <td class="num">15.6 s</td><td class="num">~435/s</td>
+          <td class="num">6,791</td><td class="num">3,209</td>
+          <td class="num">8,993 ms</td><td class="num">14,641 ms</td><td class="num">15,277 ms</td><td class="num">15,432 ms</td>
+          <td class="num">5.6 s</td>
+        </tr>
+        <tr>
+          <td class="name">Release קר</td>
+          <td class="num">28.4 s</td><td class="num">~328/s</td>
+          <td class="num">9,304</td><td class="num">696</td>
+          <td class="num">13,769 ms</td><td class="num">27,174 ms</td><td class="num">28,080 ms</td><td class="num">28,260 ms</td>
+          <td class="num">1.4 s</td>
+        </tr>
+        <tr>
+          <td class="name">Release חם</td>
+          <td class="num">22.0 s</td><td class="num">~455/s</td>
+          <td class="num">10,000</td><td class="num">0</td>
+          <td class="num">10,942 ms</td><td class="num">20,516 ms</td><td class="num">21,532 ms</td><td class="num">21,892 ms</td>
+          <td class="num">—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="footnote">
+    בכל ריצה המאזן אחרי הפרץ תאם בדיוק את מספר ה־200 (אף 503 לא הזיז נקודות), ואחרי ה־retry כל
+    10,000 הבקשות הוחלו בדיוק פעם אחת. הריצה ה"קרה" איטית בגלל JIT warm-up באמצע הפרץ;
+    ‏Debug מול Release חם נותנים כמעט אותו קצב — הראיה שהתקרה היא הפרוטוקול, לא הקוד.
+  </p>
+</section>
+
+<section id="test2">
+  <h2>מדידה 2 — גודל הפרץ שנבלע בתוך שנייה <span class="tag">HotPlayerLatencyCeilingTests</span></h2>
+  <p>
+    פרץ בודד בגדלים עולים, שחקן טרי לכל מדרגה. הזמן הכולל גדל ליניארית עם הגודל —
+    ‏<span class="mono" dir="ltr">~2.05 ms</span> לבקשה — בדיוק מה ש"activation אחד, קצב שירות קבוע" מנבא.
+  </p>
+
+  <figure class="chart">
+    <figcaption>‏latency מקסימלי מול גודל הפרץ</figcaption>
+    <div class="sub">Release חם. הקו המקווקו — תקציב השנייה. פרץ של 512 חוצה אותו בדיוק: הקו עובר בין 384 ל־512, סביב ‎~490 בקשות.</div>
+    <div class="plot">
+      <svg viewBox="0 0 760 300" role="img" aria-label="latency מקסימלי לפי גודל פרץ: 64 עד 512">
+        <defs>
+          <clipPath id="plotB"><rect x="60" y="18" width="640" height="232"></rect></clipPath>
+        </defs>
+        <line class="gridline" x1="60" y1="202.1" x2="700" y2="202.1"></line>
+        <line class="gridline" x1="60" y1="154.2" x2="700" y2="154.2"></line>
+        <line class="gridline" x1="60" y1="106.3" x2="700" y2="106.3"></line>
+        <text class="t-axis" x="52" y="253" text-anchor="end">0</text>
+        <text class="t-axis" x="52" y="206" text-anchor="end">250</text>
+        <text class="t-axis" x="52" y="158" text-anchor="end">500</text>
+        <text class="t-axis" x="52" y="110" text-anchor="end">750</text>
+        <text class="t-axis" x="52" y="62" text-anchor="end">1,000</text>
+
+        <g clip-path="url(#plotB)">
+          <rect x="92"  y="222.2" width="64" height="32"  rx="4" fill="var(--series-1)" data-tip="burst 64 — max 145 ms (wall 150 ms)"></rect>
+          <rect x="220" y="200.7" width="64" height="54"  rx="4" fill="var(--series-1)" data-tip="burst 128 — max 257 ms (wall 259 ms)"></rect>
+          <rect x="348" y="143.4" width="64" height="111" rx="4" fill="var(--series-1)" data-tip="burst 256 — max 556 ms (wall 567 ms)"></rect>
+          <rect x="476" y="91.5"  width="64" height="163" rx="4" fill="var(--series-1)" data-tip="burst 384 — max 827 ms (wall 830 ms)"></rect>
+          <rect x="604" y="48.7"  width="64" height="206" rx="4" fill="var(--series-1)" data-tip="burst 512 — max 1,050 ms (wall 1,052 ms)"></rect>
+        </g>
+
+        <line class="threshold" x1="60" y1="58.3" x2="700" y2="58.3"></line>
+        <text class="t-val" x="700" y="50" text-anchor="end">1 s</text>
+
+        <text class="t-val" x="124" y="214" text-anchor="middle">145</text>
+        <text class="t-val" x="252" y="193" text-anchor="middle">257</text>
+        <text class="t-val" x="380" y="135" text-anchor="middle">556</text>
+        <text class="t-val" x="508" y="84"  text-anchor="middle">827</text>
+        <text class="t-val" x="636" y="41"  text-anchor="middle">1,050</text>
+
+        <line class="baseline" x1="60" y1="250" x2="700" y2="250"></line>
+        <text class="t-axis" x="124" y="270" text-anchor="middle">64</text>
+        <text class="t-axis" x="252" y="270" text-anchor="middle">128</text>
+        <text class="t-axis" x="380" y="270" text-anchor="middle">256</text>
+        <text class="t-axis" x="508" y="270" text-anchor="middle">384</text>
+        <text class="t-axis" x="636" y="270" text-anchor="middle">512</text>
+        <text class="t-axis" x="60" y="290" text-anchor="start">גודל הפרץ (בקשות בו־זמנית) · ציר y: ms</text>
+      </svg>
+    </div>
+  </figure>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th class="num">גודל</th>
+          <th class="num">זמן כולל</th>
+          <th class="num">הוחלו</th>
+          <th class="num">503</th>
+          <th class="num">p50</th>
+          <th class="num">p95</th>
+          <th class="num">p99</th>
+          <th class="num">max</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="num">64</td><td class="num">150 ms</td><td class="num">64</td><td class="num">0</td><td class="num">69</td><td class="num">129</td><td class="num">145</td><td class="num">145</td></tr>
+        <tr><td class="num">128</td><td class="num">259 ms</td><td class="num">128</td><td class="num">0</td><td class="num">123</td><td class="num">244</td><td class="num">255</td><td class="num">257</td></tr>
+        <tr><td class="num">256</td><td class="num">567 ms</td><td class="num">256</td><td class="num">0</td><td class="num">303</td><td class="num">536</td><td class="num">552</td><td class="num">556</td></tr>
+        <tr><td class="num">384</td><td class="num">830 ms</td><td class="num">384</td><td class="num">0</td><td class="num">443</td><td class="num">789</td><td class="num">820</td><td class="num">827</td></tr>
+        <tr class="over"><td class="num">512</td><td class="num">1,052 ms</td><td class="num">512</td><td class="num">0</td><td class="num">524</td><td class="num">1,007</td><td class="num">1,040</td><td class="num">1,050</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="footnote">כל הערכים ב־ms. אף מדרגה לא שפכה בקשות — התור פשוט מתארך ליניארית עד שחוצים את השנייה.</p>
+</section>
+
+<section id="test3">
+  <h2>מדידה 3 — קצב מתמשך בתקציב שנייה <span class="tag">HotPlayerLatencyCeilingTests</span></h2>
+  <p>
+    עומס open-loop: הבקשות משוגרות לפי לוח זמנים קבוע במשך 4 שניות, בלי לחכות לתשובות — כמו
+    לקוחות עצמאיים. מתחת לקצב השירות התור רדוד וה־latency שטוח; מעליו כל שנייה של עומס מוסיפה
+    שנייה של תור. הברך בין שני המשטרים היא התקרה בת־הקיימא.
+  </p>
+
+  <figure class="chart">
+    <figcaption>‏p50 ו־p99 מול קצב ההגעה</figcaption>
+    <div class="sub">Release חם, 4 שניות לכל מדרגה. ב־450/s עדיין מתחת לשנייה (p99 ‏434 ms); ב־550/s התור גדל ללא גבול והקו נחצה.</div>
+    <div class="legend">
+      <span class="key"><span class="sw" style="background:var(--series-1)"></span>p99</span>
+      <span class="key"><span class="sw" style="background:var(--series-2)"></span>p50</span>
+    </div>
+    <div class="plot">
+      <svg viewBox="0 0 760 330" role="img" aria-label="אחוזוני latency מול קצב הגעה: 250 עד 550 לשנייה">
+        <line class="gridline" x1="60" y1="189.4" x2="700" y2="189.4"></line>
+        <line class="gridline" x1="60" y1="48.2" x2="700" y2="48.2"></line>
+        <text class="t-axis" x="52" y="263" text-anchor="end">0</text>
+        <text class="t-axis" x="52" y="193" text-anchor="end">500</text>
+        <text class="t-axis" x="52" y="122" text-anchor="end">1,000</text>
+        <text class="t-axis" x="52" y="52" text-anchor="end">1,500</text>
+
+        <line class="threshold" x1="60" y1="118.8" x2="700" y2="118.8"></line>
+        <text class="t-val" x="700" y="110" text-anchor="end">1 s</text>
+
+        <!-- p50 (orange) -->
+        <polyline fill="none" stroke="var(--series-2)" stroke-width="2"
+          points="140,258.9 300,258.6 460,247.6 620,197.8"></polyline>
+        <!-- p99 (blue) -->
+        <polyline fill="none" stroke="var(--series-1)" stroke-width="2"
+          points="140,239.0 300,256.2 460,198.7 620,44.3"></polyline>
+
+        <g fill="var(--series-2)" stroke="var(--surface)" stroke-width="2">
+          <circle cx="140" cy="258.9" r="4.5" data-tip="250/s — p50: 8 ms"></circle>
+          <circle cx="300" cy="258.6" r="4.5" data-tip="350/s — p50: 10 ms"></circle>
+          <circle cx="460" cy="247.6" r="4.5" data-tip="450/s — p50: 88 ms"></circle>
+          <circle cx="620" cy="197.8" r="4.5" data-tip="550/s — p50: 441 ms"></circle>
+        </g>
+        <g fill="var(--series-1)" stroke="var(--surface)" stroke-width="2">
+          <circle cx="140" cy="239.0" r="4.5" data-tip="250/s — p99: 149 ms"></circle>
+          <circle cx="300" cy="256.2" r="4.5" data-tip="350/s — p99: 27 ms"></circle>
+          <circle cx="460" cy="198.7" r="4.5" data-tip="450/s — p99: 434 ms"></circle>
+          <circle cx="620" cy="44.3" r="4.5" data-tip="550/s — p99: 1,528 ms"></circle>
+        </g>
+
+        <text class="t-series" x="634" y="40" fill="var(--series-1)">p99</text>
+        <text class="t-series" x="634" y="202" fill="var(--series-2)">p50</text>
+
+        <line class="baseline" x1="60" y1="260" x2="700" y2="260"></line>
+        <text class="t-axis" x="140" y="280" text-anchor="middle">250/s</text>
+        <text class="t-axis" x="300" y="280" text-anchor="middle">350/s</text>
+        <text class="t-axis" x="460" y="280" text-anchor="middle">450/s</text>
+        <text class="t-axis" x="620" y="280" text-anchor="middle">550/s</text>
+        <text class="t-axis" x="60" y="302" text-anchor="start">קצב הגעה מוצע · ציר y: ms</text>
+      </svg>
+    </div>
+  </figure>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th class="num">קצב</th>
+          <th class="num">בקשות</th>
+          <th class="num">503</th>
+          <th class="num">p50</th>
+          <th class="num">p95</th>
+          <th class="num">p99</th>
+          <th class="num">max</th>
+          <th>משטר</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="num">250/s</td><td class="num">1,000</td><td class="num">0</td><td class="num">8</td><td class="num">76</td><td class="num">149</td><td class="num">174</td><td>יציב</td></tr>
+        <tr><td class="num">350/s</td><td class="num">1,400</td><td class="num">0</td><td class="num">10</td><td class="num">21</td><td class="num">27</td><td class="num">32</td><td>יציב, שטוח</td></tr>
+        <tr><td class="num">450/s</td><td class="num">1,800</td><td class="num">0</td><td class="num">88</td><td class="num">285</td><td class="num">434</td><td class="num">647</td><td>סף רוויה (~92%)</td></tr>
+        <tr class="over"><td class="num">550/s</td><td class="num">2,200</td><td class="num">0</td><td class="num">441</td><td class="num">1,166</td><td class="num">1,528</td><td class="num">1,643</td><td>מעבר לרוויה — תור גדל</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="footnote">
+    כל הערכים ב־ms. הזנב הגבוה יחסית ב־250/s ‏(p99 ‏149) הוא ההפעלה הראשונה של שחקן טרי בחלון
+    הראשון; ב־350/s הפרופיל השטוח האמיתי. ב־550/s הריצה גם התארכה ל־4.8 שניות — התור לא
+    התרוקן עד סוף החלון, החתימה של קצב הגעה מעל קצב שירות.
+  </p>
+</section>
+
+<section id="conclusions">
+  <h2>מסקנות</h2>
+  <ul class="tight">
+    <li><strong>קצב השירות של grain יחיד: ‎~490 טרנזקציות לשנייה</strong> (‎~2.05 ms לטרנזקציה). Debug ו־Release חם כמעט זהים — העלות היא פרוטוקול הטרנזקציות (2PC, תור נעילות, כתיבת state), לא ה־JIT.</li>
+    <li><strong>תשובה בתוך שנייה:</strong> פרץ בודד של עד ‎~490 בקשות, או קצב מתמשך של עד ‎~450–500/s. אותו מספר משני כיוונים — שנייה של תקציב המתנה היא שנייה של תור. <strong>נקודת עבודה בטוחה: ‎~400/s</strong> (ב־450/s הניצולת ~92% וכל variance מקפיץ את הזנב).</li>
+    <li><strong>חוזה העומס־יתר מחזיק:</strong> בכל 37,744 הבקשות — רק 200 או 503, אפס תשובות תלויות, אפס 500. כל 503 היה ניתן ל־retry עם אותו requestId, וכל retry הסתיים בהצלחה בלי כפילות.</li>
+    <li><strong>הכאב בעומס־יתר הוא latency, לא איבוד:</strong> בפרץ 10K ה־p50 היה 9–14 שניות. המערכת לא שברה שום הבטחה — אבל משתמש לא מחכה 10 שניות ל־ack.</li>
+    <li><strong>בידוד עבד לכל האורך:</strong> העומס נשאר תקוע ב־grain אחד; שום מדידה לא השפיעה על שחקנים אחרים או על מסלול ה־leaderboard.</li>
+  </ul>
+</section>
+
+<footer class="report">
+  <p>
+    הטסטים: <code>tests/PlayerService.E2ETests/HotPlayerBurstTests.cs</code> ·
+    <code>tests/PlayerService.E2ETests/HotPlayerLatencyCeilingTests.cs</code> —
+    מתויגים <code>Category=Load</code>.
+    הרצה חוזרת: להרים את השירות (<code dir="ltr">dotnet run --project src/PlayerService.Api</code>)
+    ואז <code dir="ltr">dotnet test --filter "Category=Load"</code>.
+    להחרגה מריצה רגילה: <code dir="ltr">--filter "Category!=Load"</code>.
+  </p>
+</footer>
+
+</div>
+
+<div id="tip" hidden></div>
+
+<script>
+  (function () {
+    var tip = document.getElementById('tip');
+    var marks = document.querySelectorAll('[data-tip]');
+    for (var i = 0; i < marks.length; i++) {
+      marks[i].addEventListener('mousemove', function (e) {
+        tip.textContent = this.getAttribute('data-tip');
+        tip.hidden = false;
+        var x = e.pageX + 14;
+        var y = e.pageY - 12;
+        var maxX = document.documentElement.scrollWidth - tip.offsetWidth - 8;
+        if (x > maxX) { x = e.pageX - tip.offsetWidth - 14; }
+        tip.style.left = x + 'px';
+        tip.style.top = y + 'px';
+      });
+      marks[i].addEventListener('mouseleave', function () { tip.hidden = true; });
+    }
+  })();
+</script>
+</body>
+</html>
