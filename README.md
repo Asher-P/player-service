@@ -1,3 +1,20 @@
+## 🗺️ Documentation Map
+
+> All documentation files in this project, organized by purpose:
+
+| File | Description |
+|------|-------------|
+| [README.md](README.md) | **This document** — Full technical reference: architecture, code details, observability, tests and design decisions |
+| [README-SHORT.md](README-SHORT.md) | **🔑 Read me first** — Executive Summary in English: development process, focused explanations per section, and links |
+| [README-HE.md](README-HE.md) | Full technical documentation in Hebrew (same scope as this document) |
+| [README-SHORT-HE.md](README-SHORT-HE.md) | Executive Summary in Hebrew |
+| [docs/plan/player-service-plan.md](docs/plan/player-service-plan.md) | Service design document written before implementation — proposed architecture, diagrams and planning details |
+| [docs/tests-overview.md](docs/tests-overview.md) | Detailed overview of all tests: coverage map, explanation of each test and run configuration |
+| [docs/Senior_Backend_Assignment_REST_DotNet8.md](docs/Senior_Backend_Assignment_REST_DotNet8.md) | Original assignment requirements document (English) |
+| [docs/hot-player-benchmark-report.html](docs/hot-player-benchmark-report.html) | 📊 Benchmark report — Hot Player load test results, open in browser |
+
+---
+
 # Player Service
 
 .NET 8 Web API over **Microsoft Orleans** (virtual actors) for a highly concurrent mobile

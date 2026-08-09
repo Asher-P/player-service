@@ -1,3 +1,21 @@
+<div dir="rtl">
+
+## 🗺️ מפת הדוקומנטציה
+
+> להלן כל קבצי התיעוד בפרויקט, ממוינים לפי תכלית:
+
+| קובץ | תיאור |
+|------|--------|
+| [README-HE.md](README-HE.md) | **המסמך הנוכחי** — תיעוד טכני מלא ומקיף של המימוש: ארכיטקטורה, פרטי קוד, ניראות, בדיקות והחלטות עיצוב |
+| [README-SHORT-HE.md](README-SHORT-HE.md) | **🔑 קרא אותי ראשון** — מסמך Executive Summary בעברית: תהליך פיתוח, הסברים ממוקדים לכל סעיף, וקישורים |
+| [README-SHORT.md](README-SHORT.md) | כמו לעיל, בגרסה האנגלית |
+| [docs/plan/player-service-plan.md](docs/plan/player-service-plan.md) | מסמך אפיון השירות שנכתב לפני המימוש — ארכיטקטורה מוצעת, דיאגרמות ופרטי תכנון |
+| [docs/tests-overview.md](docs/tests-overview.md) | סקירה מפורטת של כלל הבדיקות: מפת כיסוי, הסבר על כל בדיקה ותצורת ריצה |
+| [docs/Senior_Backend_Assignment_REST_DotNet8.md](docs/Senior_Backend_Assignment_REST_DotNet8.md) | מסמך דרישות המשימה המקורי באנגלית |
+| [docs/hot-player-benchmark-report.html](docs/hot-player-benchmark-report.html) | 📊 דוח בנצ'מארק — תוצאות מבחן עומס על "שחקן חם" (Hot Player), פתח בדפדפן |
+
+</div>
+
 # שירות שחקנים (Player Service)
 
 ממשק ה-.NET 8 Web API מעל **Microsoft Orleans** (שחקנים וירטואליים - virtual actors) עבור צד-שרת של משחק פאזל לנייד עם ריבוי משימות גבוה (highly concurrent): סשנים, ניקוד, שליחת מתנות וטבלת מובילים, ללא מסד נתונים.
